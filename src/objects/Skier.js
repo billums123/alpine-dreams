@@ -1085,9 +1085,9 @@ export class Skier {
                         skierSpeed > 5 &&
                         timeSinceLastJump > 800) {
 
-                        // Launch off the jump - boost based on speed and jump size
-                        const launchPower = Math.min(skierSpeed * 0.35 * jumpScale, 14);
-                        this.verticalVelocity = launchPower + 2; // Base launch + speed bonus
+                        // Launch off the jump - gentler boost based on speed and jump size
+                        const launchPower = Math.min(skierSpeed * 0.15 * jumpScale, 6);
+                        this.verticalVelocity = launchPower + 1.5; // Base launch + speed bonus (max ~7.5)
                         this.isGrounded = false;
                         this.isJumping = true;
                         this.lastJumpRampTime = now;

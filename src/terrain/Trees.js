@@ -25,32 +25,25 @@ export class Trees {
 
         // Scatter trees across the entire terrain
         const terrainSize = this.mountain.width;
-        const halfSize = terrainSize / 2;
-        const targetTreeCount = 2000; // Target number of trees
+        const targetTreeCount = 1000; // 50% density
         let attempts = 0;
         const maxAttempts = targetTreeCount * 5;
 
         while (this.trees.length < targetTreeCount && attempts < maxAttempts) {
             attempts++;
 
-            // Random position across terrain
-            const x = (Math.random() - 0.5) * terrainSize * 0.95;
-            const z = (Math.random() - 0.5) * terrainSize * 0.95;
+            // Random position across entire terrain
+            const x = (Math.random() - 0.5) * terrainSize * 0.98;
+            const z = (Math.random() - 0.5) * terrainSize * 0.98;
             const height = this.mountain.getHeightAt(x, z);
 
-            // Only place trees where there's actual terrain (height > 0.5)
-            if (height < 0.5) continue;
-
-            // Don't place above tree line
-            if (height > 60) continue;
+            // Place trees at any height (all parts of mountain)
+            // Only skip if below terrain level
+            if (height < -1) continue;
 
             // Don't place on very steep slopes (cliffs)
             const slope = this.mountain.getSlopeAt ? this.mountain.getSlopeAt(x, z) : 0;
-            if (slope > 0.65) continue;
-
-            // Density varies with height - more trees at lower elevations
-            const heightFactor = 1 - (height / 60) * 0.5;
-            if (Math.random() > heightFactor) continue;
+            if (slope > 0.7) continue;
 
             // Create tree
             const variant = Math.random();
