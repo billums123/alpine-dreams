@@ -22,12 +22,13 @@ export class Skier {
         this.edgeAngle = 0; // Lean angle for turning
 
         // Physics constants - tuned for fun skiing
-        this.gravity = 15; // Gravity strength
-        this.airFriction = 0.01;
+        this.gravity = 15; // Gravity for slope acceleration
+        this.airGravity = 20; // Realistic gravity when airborne (9.8 m/s^2 scaled)
+        this.airFriction = 0.005;
         this.turnSpeed = 2.5; // How fast you can turn
         this.maxSpeed = 35; // Top speed
         this.brakeForce = 0.92; // Multiplier when braking
-        this.jumpForce = 8;
+        this.jumpForce = 5; // Realistic small hop
 
         // Starting position for reset
         this.startPosition = new THREE.Vector3();
@@ -60,9 +61,9 @@ export class Skier {
         };
 
         // Camera settings
-        this.cameraOffset = new THREE.Vector3(0, 3, 8);
-        this.cameraLookAhead = 5;
-        this.cameraSmoothness = 0.1;
+        this.cameraOffset = new THREE.Vector3(0, 4, 10);
+        this.cameraLookAhead = 3;
+        this.cameraSmoothness = 0.06; // Smoother camera (lower = smoother)
 
         // Stored camera state for restoration
         this.savedCameraPosition = null;
@@ -647,15 +648,20 @@ export class Skier {
                 this.input.jump = false;
             }
         } else {
-            // AIR PHYSICS
-            this.verticalVelocity -= this.gravity * delta;
+            // AIR PHYSICS - realistic gravity when airborne
+            this.verticalVelocity -= this.airGravity * delta;
 
-            // Maintain horizontal velocity in air (with slight drag)
+            // Maintain horizontal velocity in air (minimal drag)
             this.velocity.x *= (1 - this.airFriction);
             this.velocity.z *= (1 - this.airFriction);
 
             // Update currentSpeed from velocity
             this.currentSpeed = Math.sqrt(this.velocity.x * this.velocity.x + this.velocity.z * this.velocity.z);
+
+            // Allow slight air control for steering
+            if (Math.abs(this.edgeAngle) > 0.1) {
+                this.rotation += this.edgeAngle * 0.5 * delta;
+            }
         }
 
         // Apply horizontal velocity
@@ -841,28 +847,30 @@ export class Skier {
 
         // Ensure camera doesn't go below terrain
         const terrainHeightAtCamera = this.mountain.getHeightAt(targetCameraPos.x, targetCameraPos.z);
-        const minCameraHeight = terrainHeightAtCamera + 2.0; // Keep at least 2 units above terrain
+        const minCameraHeight = terrainHeightAtCamera + 3.0;
         if (targetCameraPos.y < minCameraHeight) {
             targetCameraPos.y = minCameraHeight;
         }
 
-        // Also ensure camera is always above skier
-        const minAboveSkier = this.position.y + 1.5;
-        if (targetCameraPos.y < minAboveSkier) {
-            targetCameraPos.y = minAboveSkier;
+        // Keep camera steady relative to ground during jumps
+        // Don't follow skier's Y position exactly when airborne
+        if (!this.isGrounded) {
+            const groundHeight = this.mountain.getHeightAt(this.position.x, this.position.z);
+            targetCameraPos.y = Math.max(targetCameraPos.y, groundHeight + this.cameraOffset.y);
         }
 
-        // Smooth camera movement
-        this.camera.position.lerp(targetCameraPos, this.cameraSmoothness);
+        // Smooth camera movement (extra smooth for stability)
+        const smoothness = this.isGrounded ? this.cameraSmoothness : this.cameraSmoothness * 0.5;
+        this.camera.position.lerp(targetCameraPos, smoothness);
 
-        // Look at skier (slightly ahead)
-        const lookTarget = this.position.clone().add(
-            new THREE.Vector3(
-                Math.sin(this.rotation) * this.cameraLookAhead,
-                1.0,
-                Math.cos(this.rotation) * this.cameraLookAhead
-            )
-        );
+        // Look at skier (at body height, not feet)
+        const lookTarget = this.position.clone();
+        lookTarget.y += 1.0; // Look at skier's torso
+        lookTarget.add(new THREE.Vector3(
+            Math.sin(this.rotation) * this.cameraLookAhead,
+            0,
+            Math.cos(this.rotation) * this.cameraLookAhead
+        ));
 
         this.camera.lookAt(lookTarget);
     }

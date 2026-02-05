@@ -42,7 +42,7 @@ export class CameraControls {
         this.controls.maxPolarAngle = Math.PI / 2 - 0.1; // ~85 degrees
 
         // Set target (look at center of terrain)
-        this.controls.target.set(0, 5, 0);
+        this.controls.target.set(0, 0, -50);
 
         // Smooth key controls
         this.controls.keys = {
@@ -77,20 +77,20 @@ export class CameraControls {
         this.camera.position.y = Math.max(position.y + 10, this.camera.position.y);
     }
 
-    // Reset to default view (scaled for larger terrain)
+    // Reset to default view - shows entire mountain
     reset() {
-        this.camera.position.set(150, 100, 200);
-        this.controls.target.set(0, 10, 0);
+        this.camera.position.set(0, 350, 450);
+        this.controls.target.set(0, 0, -50);
         this.controls.update();
     }
 
     // Set camera to a preset view (scaled for larger terrain)
     setView(view) {
         const views = {
-            'top': { pos: [0, 400, 0.1], target: [0, 0, 0] },
-            'front': { pos: [0, 80, 300], target: [0, 10, 0] },
-            'side': { pos: [300, 80, 0], target: [0, 10, 0] },
-            'default': { pos: [150, 100, 200], target: [0, 10, 0] }
+            'top': { pos: [0, 500, 0.1], target: [0, 0, 0] },
+            'front': { pos: [0, 100, 400], target: [0, 20, 0] },
+            'side': { pos: [400, 100, 0], target: [0, 20, 0] },
+            'default': { pos: [0, 350, 450], target: [0, 0, -50] }
         };
 
         const v = views[view] || views.default;

@@ -17,17 +17,18 @@ export class SceneManager {
     async init() {
         // Create scene
         this.scene = new THREE.Scene();
-        this.scene.fog = new THREE.FogExp2(0x9bb5ce, 0.002); // Less fog for larger terrain
+        this.scene.fog = new THREE.FogExp2(0x9bb5ce, 0.0015); // Light fog for atmosphere
 
-        // Create camera (scaled for larger terrain)
+        // Create camera - positioned to see entire mountain
         this.camera = new THREE.PerspectiveCamera(
             60,
             window.innerWidth / window.innerHeight,
             0.1,
             3000
         );
-        this.camera.position.set(150, 100, 200);
-        this.camera.lookAt(0, 10, 0);
+        // Position camera high and back to see the whole terrain
+        this.camera.position.set(0, 350, 450);
+        this.camera.lookAt(0, 0, -50);
 
         // Create renderer
         const canvas = document.getElementById(this.canvasId);

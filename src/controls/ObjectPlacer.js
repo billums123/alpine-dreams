@@ -400,16 +400,22 @@ export class ObjectPlacer {
         // Get target for rotation (preview or selected object)
         const target = this.previewObject || (this.selectedObject && this.selectedObject.object);
 
-        // Rotate with R key (quick 45 degree yaw rotation)
-        if ((event.key === 'r' || event.key === 'R') && target) {
-            target.rotation.y += Math.PI / 4;
-        }
-
-        // Arrow keys for pitch and yaw control
         if (target) {
-            const rotationStep = Math.PI / 12; // 15 degrees
+            const rotationStep = Math.PI / 18; // 10 degrees - finer control
 
-            // Left/Right arrows = Yaw (rotation around Y axis)
+            // R key = Quick 45 degree yaw rotation
+            if (event.key === 'r' || event.key === 'R') {
+                target.rotation.y += Math.PI / 4;
+                event.preventDefault();
+            }
+
+            // T key = Reset rotation to default
+            if (event.key === 't' || event.key === 'T') {
+                target.rotation.set(0, 0, 0);
+                event.preventDefault();
+            }
+
+            // Left/Right arrows = Yaw (spin left/right)
             if (event.key === 'ArrowLeft') {
                 target.rotation.y += rotationStep;
                 event.preventDefault();
@@ -418,7 +424,7 @@ export class ObjectPlacer {
                 event.preventDefault();
             }
 
-            // Up/Down arrows = Pitch (rotation around X axis)
+            // Up/Down arrows = Pitch (tilt forward/back)
             if (event.key === 'ArrowUp') {
                 target.rotation.x -= rotationStep;
                 event.preventDefault();

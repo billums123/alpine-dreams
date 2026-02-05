@@ -35,14 +35,20 @@ export class Mountain {
     // Generate random peak positions and heights
     generateRandomPeaks() {
         const peaks = [];
-        const numPeaks = 8 + Math.floor(this.seededRandom() * 8); // 8-15 peaks for larger terrain
+        const numPeaks = 6 + Math.floor(this.seededRandom() * 6); // 6-11 gentle peaks
+
+        // Terrain fills 75% of space, centered
+        const terrainRadius = this.width * 0.375; // 75% / 2
 
         for (let i = 0; i < numPeaks; i++) {
+            // Peaks distributed across center 75% of terrain
+            const angle = this.seededRandom() * Math.PI * 2;
+            const dist = this.seededRandom() * terrainRadius * 0.8;
             peaks.push({
-                x: (this.seededRandom() - 0.5) * 300, // Scaled for 5x terrain
-                z: -50 - this.seededRandom() * 200, // Mostly in back half
-                height: 30 + this.seededRandom() * 50, // Taller peaks
-                radius: 50 + this.seededRandom() * 80 // Wider peaks
+                x: Math.cos(angle) * dist,
+                z: Math.sin(angle) * dist - terrainRadius * 0.3, // Slight back bias
+                height: 20 + this.seededRandom() * 30, // Lower, gentler peaks
+                radius: 80 + this.seededRandom() * 120 // Much wider = gentler slopes
             });
         }
 
@@ -114,39 +120,42 @@ export class Mountain {
     calculateHeight(x, z) {
         let height = 0;
 
-        // Distance from center for falloff (scaled for 5x larger terrain)
+        // Terrain fills 75% of available space, centered
+        const terrainRadius = this.width * 0.375; // 75% / 2 = 225 for 600 width
         const distFromCenter = Math.sqrt(x * x + z * z);
-        const edgeFalloff = this.smoothstep(300, 225, distFromCenter);
 
-        // Bias toward back of terrain (mountains in back, valley in front)
-        const backBias = this.smoothstep(200, -150, z);
+        // Smooth falloff at 75% boundary
+        const edgeFalloff = this.smoothstep(terrainRadius, terrainRadius * 0.85, distFromCenter);
 
-        // Main terrain shape using smooth noise (with seed offset for variation)
-        const noiseScale = 0.003 + (this.seed % 100) / 50000; // Adjusted for larger scale
+        // Gentler back bias for natural mountain feel
+        const backBias = this.smoothstep(terrainRadius * 0.6, -terrainRadius * 0.4, z);
+
+        // Main terrain shape using smooth noise - reduced amplitude for gentler slopes
+        const noiseScale = 0.004 + (this.seed % 100) / 50000;
         const baseNoise = this.fbmNoise(x * noiseScale + this.seed, z * noiseScale, 4, 0.5, 2.0);
-        height += baseNoise * 50 * edgeFalloff;
+        height += baseNoise * 30 * edgeFalloff;
 
-        // Large rounded peaks (randomized)
+        // Large rounded peaks (randomized) - gentler with larger radii
         let peakHeight = 0;
         for (const peak of this.peaks) {
             peakHeight += this.gaussianPeak(x, z, peak.x, peak.z, peak.height, peak.radius);
         }
         height += peakHeight * backBias;
 
-        // Gentle rolling hills using low-frequency noise (with seed variation)
-        const hillScale = 0.006 + (this.seed % 50) / 25000;
+        // Gentle rolling hills
+        const hillScale = 0.005 + (this.seed % 50) / 25000;
         const hills = this.fbmNoise(x * hillScale + this.seed * 0.1, z * hillScale + 100, 2, 0.5, 2.0);
-        height += hills * 20 * edgeFalloff * (1 - backBias * 0.5);
+        height += hills * 15 * edgeFalloff * (1 - backBias * 0.3);
 
-        // Valley floor in front (scaled)
-        const valleyFloor = this.smoothstep(75, 175, z);
-        height *= (1 - valleyFloor * 0.8);
+        // Gradual valley floor in front
+        const valleyFloor = this.smoothstep(terrainRadius * 0.2, terrainRadius * 0.5, z);
+        height *= (1 - valleyFloor * 0.6);
 
-        // Ensure minimum height and smooth edges
-        height = Math.max(-1, height);
+        // Ensure minimum height
+        height = Math.max(0, height);
 
-        // Smooth terrain edges to zero (scaled)
-        const edgeSmooth = this.smoothstep(290, 270, distFromCenter);
+        // Smooth terrain edges to flat ground at boundary
+        const edgeSmooth = this.smoothstep(terrainRadius, terrainRadius * 0.9, distFromCenter);
         height *= edgeSmooth;
 
         return height;
