@@ -103,4 +103,32 @@ export class CameraControls {
     setEnabled(enabled) {
         this.controls.enabled = enabled;
     }
+
+    // Set sculpt mode - disable left-click rotation but allow two-finger/right-click
+    setSculptMode(enabled) {
+        if (enabled) {
+            // In sculpt mode: right-click/two-finger for rotate, middle for pan
+            this.controls.mouseButtons = {
+                LEFT: null, // Disable left-click rotation (used for sculpting)
+                MIDDLE: THREE.MOUSE.PAN,
+                RIGHT: THREE.MOUSE.ROTATE // Two-finger on trackpad = right-click
+            };
+            // Also allow touch rotation with two fingers
+            this.controls.touches = {
+                ONE: null, // Single touch disabled (used for sculpting)
+                TWO: THREE.TOUCH.DOLLY_ROTATE // Two-finger for zoom and rotate
+            };
+        } else {
+            // Normal mode: standard controls
+            this.controls.mouseButtons = {
+                LEFT: THREE.MOUSE.ROTATE,
+                MIDDLE: THREE.MOUSE.DOLLY,
+                RIGHT: THREE.MOUSE.PAN
+            };
+            this.controls.touches = {
+                ONE: THREE.TOUCH.ROTATE,
+                TWO: THREE.TOUCH.DOLLY_PAN
+            };
+        }
+    }
 }

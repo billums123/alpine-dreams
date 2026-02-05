@@ -76,20 +76,12 @@ export class UI {
     onKeyDownGlobal(e) {
         if (e.key === 'Control') {
             this.ctrlPressed = true;
-            // Enable camera rotation when Ctrl is pressed in sculpt mode
-            if (this.sculptMode && this.cameraControls) {
-                this.cameraControls.setEnabled(true);
-            }
         }
     }
 
     onKeyUpGlobal(e) {
         if (e.key === 'Control') {
             this.ctrlPressed = false;
-            // Disable camera rotation when Ctrl is released in sculpt mode
-            if (this.sculptMode && this.cameraControls) {
-                this.cameraControls.setEnabled(false);
-            }
         }
     }
 
@@ -134,9 +126,9 @@ export class UI {
                     this.sculptMode = sculptType;
                     document.body.classList.add('sculpt-mode');
 
-                    // Disable camera rotation (require Ctrl to rotate)
+                    // Enable sculpt mode - allows two-finger/right-click rotation
                     if (this.cameraControls) {
-                        this.cameraControls.setEnabled(false);
+                        this.cameraControls.setSculptMode(true);
                     }
 
                     const modeNames = {
@@ -145,7 +137,7 @@ export class UI {
                         'smooth': 'Smooth Terrain',
                         'flatten': 'Flatten Terrain'
                     };
-                    this.showModeIndicator(`Sculpting: ${modeNames[sculptType]} (Ctrl+drag to rotate)`);
+                    this.showModeIndicator(`Sculpting: ${modeNames[sculptType]} (two-finger to rotate)`);
                 }
             });
         });
@@ -226,9 +218,9 @@ export class UI {
         // Always clear selection and hide indicator when cancelling sculpt mode
         this.selectPaletteItem(null);
         this.hideModeIndicator();
-        // Re-enable camera rotation
+        // Restore normal camera controls
         if (this.cameraControls) {
-            this.cameraControls.setEnabled(true);
+            this.cameraControls.setSculptMode(false);
         }
     }
 
