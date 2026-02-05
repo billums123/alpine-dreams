@@ -312,16 +312,18 @@ export class SkiLift {
 
             // Calculate Y rotation to face along cable (only rotate around Y to stay upright)
             const angle = Math.atan2(tangent.x, tangent.z);
-            carrier.rotation.set(0, angle, 0);
+            // Chairs need +90° rotation so passengers face outward (perpendicular to cable)
+            // Gondolas face along the cable direction
+            const rotationOffset = isGondola ? 0 : Math.PI / 2;
+            carrier.rotation.set(0, angle + rotationOffset, 0);
 
             lift.add(carrier);
             carriers.push(carrier);
         }
 
         // Store carriers for animation
-        // Gondolas move faster than ski lifts
         lift.userData.carriers = carriers;
-        lift.userData.speed = isGondola ? 0.025 : 0.015; // Ski lifts at 60% of gondola speed
+        lift.userData.speed = isGondola ? 0.025 : 0.019; // Ski lifts 25% faster than before
 
         this.scene.add(lift);
         return lift;
@@ -387,6 +389,7 @@ export class SkiLift {
         if (!liftGroup.userData.carriers) return;
 
         const speed = liftGroup.userData.speed * delta;
+        const isGondola = liftGroup.userData.isGondola;
 
         liftGroup.userData.carriers.forEach(carrier => {
             // Update position along curve
@@ -416,7 +419,9 @@ export class SkiLift {
                 if (carrier.userData.isReturn) tangent.negate();
 
                 const angle = Math.atan2(tangent.x, tangent.z);
-                carrier.rotation.set(0, angle, 0);
+                // Chairs face perpendicular to cable, gondolas face along it
+                const rotationOffset = isGondola ? 0 : Math.PI / 2;
+                carrier.rotation.set(0, angle + rotationOffset, 0);
             }
         });
     }

@@ -1038,32 +1038,66 @@ export class Skier {
         const skierPos = this.position.clone();
         skierPos.y += 0.5; // Check at waist height
 
+        // Calculate skier's forward direction and velocity
+        const forward = new THREE.Vector3(Math.sin(this.rotation), 0, Math.cos(this.rotation));
+        const skierSpeed = this.currentSpeed;
+
         for (const obj of collidableObjects) {
             const objPos = obj.position.clone();
-            const distance = skierPos.distanceTo(objPos);
 
             // Check if this is a jump ramp
-            if (obj.userData.isJump && distance < 4) {
-                // Check if we're moving toward the jump and on the ramp
-                const toJump = objPos.clone().sub(skierPos).normalize();
-                const forward = new THREE.Vector3(Math.sin(this.rotation), 0, Math.cos(this.rotation));
-                const alignment = forward.dot(toJump);
+            if (obj.userData.isJump) {
+                // Get jump scale for collision radius
+                const jumpScale = obj.scale.x || 1;
+                const jumpRadius = 3.5 * jumpScale; // Wider detection area
 
-                // If moving toward jump and close enough, launch!
-                const now = performance.now();
-                if (alignment > 0.3 && distance < 2.5 && this.isGrounded &&
-                    now - this.lastJumpRampTime > 1000) {
-                    // Launch off the jump - boost based on speed
-                    const launchPower = Math.min(this.currentSpeed * 0.4, 12);
-                    this.verticalVelocity = launchPower;
-                    this.isGrounded = false;
-                    this.isJumping = true;
-                    this.lastJumpRampTime = now;
+                // Calculate 2D distance (ignore Y for ramp detection)
+                const dx = skierPos.x - objPos.x;
+                const dz = skierPos.z - objPos.z;
+                const distance2D = Math.sqrt(dx * dx + dz * dz);
+
+                if (distance2D < jumpRadius) {
+                    // Get jump's facing direction (it faces downhill based on its Y rotation)
+                    const jumpAngle = obj.rotation.y;
+                    const jumpForward = new THREE.Vector3(Math.sin(jumpAngle), 0, Math.cos(jumpAngle));
+
+                    // Check if skier is approaching from behind the ramp (going up it)
+                    const toSkier = new THREE.Vector3(dx, 0, dz).normalize();
+                    const approachAngle = jumpForward.dot(toSkier);
+
+                    // Also check if skier is moving in roughly the same direction as the jump faces
+                    const movementAlignment = forward.dot(jumpForward);
+
+                    const now = performance.now();
+                    const timeSinceLastJump = now - this.lastJumpRampTime;
+
+                    // Launch if:
+                    // - Approaching from behind the jump (approachAngle < 0.3)
+                    // - Moving in similar direction to jump (movementAlignment > 0)
+                    // - Close enough to the ramp
+                    // - Going fast enough
+                    // - On the ground
+                    // - Haven't just jumped
+                    if (distance2D < jumpRadius * 0.7 &&
+                        approachAngle < 0.5 &&
+                        movementAlignment > -0.3 &&
+                        this.isGrounded &&
+                        skierSpeed > 5 &&
+                        timeSinceLastJump > 800) {
+
+                        // Launch off the jump - boost based on speed and jump size
+                        const launchPower = Math.min(skierSpeed * 0.35 * jumpScale, 14);
+                        this.verticalVelocity = launchPower + 2; // Base launch + speed bonus
+                        this.isGrounded = false;
+                        this.isJumping = true;
+                        this.lastJumpRampTime = now;
+                    }
                 }
                 continue; // Don't collide with jumps
             }
 
-            // Collision with other objects (trees, lodges, etc.)
+            // Regular collision check for other objects
+            const distance = skierPos.distanceTo(objPos);
             const collisionRadius = this.getCollisionRadius(obj);
             if (distance < collisionRadius + 0.5) {
                 // Collision! Stop the skier and bounce back slightly
