@@ -138,6 +138,77 @@ body {
     opacity: 0.8;
 }
 
+.palette-section {
+    margin-bottom: 4px;
+}
+
+.palette-section:last-child {
+    margin-bottom: 0;
+}
+
+.palette-divider {
+    height: 1px;
+    background: rgba(255, 255, 255, 0.15);
+    margin: 8px 0;
+}
+
+/* Skier item special styling */
+.palette-item.skier-item {
+    background: linear-gradient(135deg, rgba(74, 144, 217, 0.3), rgba(100, 200, 255, 0.2));
+    border-color: rgba(74, 144, 217, 0.4);
+}
+
+.palette-item.skier-item:hover {
+    background: linear-gradient(135deg, rgba(74, 144, 217, 0.5), rgba(100, 200, 255, 0.4));
+    border-color: rgba(74, 144, 217, 0.6);
+}
+
+/* Sculpt mode cursor */
+body.sculpt-mode {
+    cursor: crosshair;
+}
+
+/* Skier mode UI */
+#skier-hud {
+    position: absolute;
+    bottom: 30px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--bg-dark);
+    backdrop-filter: blur(10px);
+    border-radius: var(--radius);
+    padding: 16px 24px;
+    box-shadow: var(--shadow);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    text-align: center;
+    color: var(--text);
+    transition: opacity 0.3s;
+}
+
+#skier-hud.hidden {
+    opacity: 0;
+    pointer-events: none;
+}
+
+#skier-hud .speed-display {
+    font-size: 2rem;
+    font-weight: 600;
+    margin-bottom: 4px;
+}
+
+#skier-hud .speed-label {
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+
+#skier-hud .controls-info {
+    margin-top: 12px;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+}
+
 /* Controls Hint */
 #controls-hint {
     position: absolute;

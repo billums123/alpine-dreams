@@ -11,6 +11,7 @@ import { Mountain } from './terrain/Mountain.js';
 import { Trees } from './terrain/Trees.js';
 import { ObjectPlacer } from './controls/ObjectPlacer.js';
 import { CameraControls } from './controls/CameraControls.js';
+import { Skier } from './objects/Skier.js';
 import { UI } from './ui/UI.js';
 
 class AlpineDreams {
@@ -23,6 +24,7 @@ class AlpineDreams {
         this.trees = null;
         this.objectPlacer = null;
         this.cameraControls = null;
+        this.skier = null;
         this.ui = null;
 
         this.isInitialized = false;
@@ -68,8 +70,16 @@ class AlpineDreams {
                 this.mountain
             );
 
+            // Initialize skier
+            this.skier = new Skier(
+                this.sceneManager.scene,
+                this.mountain,
+                this.sceneManager.camera,
+                this.cameraControls
+            );
+
             // Initialize UI
-            this.ui = new UI(this.objectPlacer, this.snow, this.sceneManager);
+            this.ui = new UI(this.objectPlacer, this.snow, this.sceneManager, this.mountain, this.skier, this.trees);
             this.ui.init();
 
             // Start render loop
@@ -95,9 +105,14 @@ class AlpineDreams {
             this.snow.update(delta);
         }
 
-        // Update camera controls
-        if (this.cameraControls) {
-            this.cameraControls.update();
+        // Update skier (if active, handles its own camera)
+        if (this.skier && this.skier.isActive) {
+            this.skier.update(delta);
+        } else {
+            // Update camera controls only when not skiing
+            if (this.cameraControls) {
+                this.cameraControls.update();
+            }
         }
 
         // Update object placer (for animations)

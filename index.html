@@ -23,32 +23,66 @@
 
             <!-- Object Palette -->
             <div id="object-palette">
-                <div class="palette-title">Build</div>
-                <div class="palette-items">
-                    <button class="palette-item" data-object="ski-lift" title="Ski Lift">
-                        <span class="icon">🚡</span>
-                        <span class="label">Lift</span>
-                    </button>
-                    <button class="palette-item" data-object="gondola" title="Gondola">
-                        <span class="icon">🚠</span>
-                        <span class="label">Gondola</span>
-                    </button>
-                    <button class="palette-item" data-object="lodge" title="Lodge">
-                        <span class="icon">🏠</span>
-                        <span class="label">Lodge</span>
-                    </button>
-                    <button class="palette-item" data-object="pine-tree" title="Pine Tree">
-                        <span class="icon">🌲</span>
-                        <span class="label">Tree</span>
-                    </button>
-                    <button class="palette-item" data-object="flag" title="Marker Flag">
-                        <span class="icon">🚩</span>
-                        <span class="label">Flag</span>
-                    </button>
-                    <button class="palette-item" data-object="snowman" title="Snowman">
-                        <span class="icon">⛄</span>
-                        <span class="label">Snowman</span>
-                    </button>
+                <div class="palette-section">
+                    <div class="palette-title">Terrain</div>
+                    <div class="palette-items">
+                        <button class="palette-item" data-sculpt="raise" title="Raise Terrain">
+                            <span class="icon">⬆️</span>
+                            <span class="label">Raise</span>
+                        </button>
+                        <button class="palette-item" data-sculpt="lower" title="Lower Terrain">
+                            <span class="icon">⬇️</span>
+                            <span class="label">Lower</span>
+                        </button>
+                        <button class="palette-item" data-sculpt="smooth" title="Smooth Terrain">
+                            <span class="icon">〰️</span>
+                            <span class="label">Smooth</span>
+                        </button>
+                    </div>
+                </div>
+
+                <div class="palette-divider"></div>
+
+                <div class="palette-section">
+                    <div class="palette-title">Build</div>
+                    <div class="palette-items">
+                        <button class="palette-item" data-object="ski-lift" title="Ski Lift">
+                            <span class="icon">🚡</span>
+                            <span class="label">Lift</span>
+                        </button>
+                        <button class="palette-item" data-object="gondola" title="Gondola">
+                            <span class="icon">🚠</span>
+                            <span class="label">Gondola</span>
+                        </button>
+                        <button class="palette-item" data-object="lodge" title="Lodge">
+                            <span class="icon">🏠</span>
+                            <span class="label">Lodge</span>
+                        </button>
+                        <button class="palette-item" data-object="pine-tree" title="Pine Tree">
+                            <span class="icon">🌲</span>
+                            <span class="label">Tree</span>
+                        </button>
+                        <button class="palette-item" data-object="flag" title="Marker Flag">
+                            <span class="icon">🚩</span>
+                            <span class="label">Flag</span>
+                        </button>
+                        <button class="palette-item" data-object="snowman" title="Snowman">
+                            <span class="icon">⛄</span>
+                            <span class="label">Snowman</span>
+                        </button>
+                    </div>
+                </div>
+
+                <div class="palette-divider"></div>
+
+                <div class="palette-section">
+                    <div class="palette-title">Play</div>
+                    <div class="palette-items">
+                        <button class="palette-item skier-item" data-object="skier" title="Place Skier - Start Skiing!">
+                            <span class="icon">⛷️</span>
+                            <span class="label">Skier</span>
+                        </button>
+                    </div>
                 </div>
             </div>
 
@@ -73,6 +107,16 @@
                 <button id="btn-random" title="Auto-Generate Resort">✨</button>
                 <button id="btn-screenshot" title="Take Screenshot">📷</button>
                 <button id="btn-toggle-snow" title="Toggle Snow">❄️</button>
+                <button id="btn-new-terrain" title="New Terrain">🏔️</button>
+            </div>
+
+            <!-- Skier HUD (shown during ski mode) -->
+            <div id="skier-hud" class="hidden">
+                <div class="speed-display"><span id="speed-value">0</span> <small>km/h</small></div>
+                <div class="speed-label">Speed</div>
+                <div class="controls-info">
+                    <kbd>W/S</kbd> Speed · <kbd>A/D</kbd> Turn · <kbd>Space</kbd> Jump · <kbd>ESC</kbd> Exit
+                </div>
             </div>
         </div>
 
