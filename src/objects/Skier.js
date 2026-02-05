@@ -730,9 +730,10 @@ export class Skier {
             const normalizedRotation = this.flipRotation % (Math.PI * 2);
             const landingAngle = Math.abs(normalizedRotation);
 
-            // Clean landing if close to full rotation or zero
-            const cleanLanding = landingAngle < 0.5 || landingAngle > Math.PI * 2 - 0.5 ||
-                                 (landingAngle > Math.PI - 0.5 && landingAngle < Math.PI + 0.5);
+            // Clean landing if within ~50 degrees of full rotation or zero (more forgiving)
+            const tolerance = 0.9; // ~52 degrees tolerance
+            const cleanLanding = landingAngle < tolerance || landingAngle > Math.PI * 2 - tolerance ||
+                                 (landingAngle > Math.PI - tolerance && landingAngle < Math.PI + tolerance);
 
             // Track flip for scoring
             const numFlips = Math.floor(Math.abs(this.flipRotation) / (Math.PI * 2));
@@ -766,8 +767,8 @@ export class Skier {
             const nearestHalf = Math.round(spinDegrees / 180) * 180;
             const landingError = Math.abs(spinDegrees - nearestHalf);
 
-            // Clean landing if within 30 degrees of a 180 increment
-            const cleanLanding = landingError < 30;
+            // Clean landing if within 50 degrees of a 180 increment (more forgiving)
+            const cleanLanding = landingError < 50;
 
             // Track spin for scoring
             if (spinDegrees >= 90) {
@@ -842,12 +843,16 @@ export class Skier {
                 this.stats.tricksLanded++;
                 this.stats.bestCombo = Math.max(this.stats.bestCombo, this.comboMultiplier);
 
+                // Play awesome landing sound!
+                this.playLandingSound(points);
+
                 // Show points popup
                 this.showPointsPopup(`${trickName}! +${points}`, true);
             } else {
                 // Failed landing - no points, reset combo
                 this.comboMultiplier = 1;
                 this.stats.tricksFailed++;
+                this.playCrashSound();
                 this.showPointsPopup(`${trickName} - CRASH!`, false);
             }
         }
@@ -968,8 +973,8 @@ export class Skier {
         const targetEdge = this.input.left ? 1.0 : (this.input.right ? -1.0 : 0);
         this.edgeAngle = THREE.MathUtils.lerp(this.edgeAngle, targetEdge, 0.15);
 
-        // Apply turning - turn rate scales with speed
-        if (Math.abs(this.edgeAngle) > 0.01) {
+        // Apply turning - only when grounded (airborne turning is handled separately for spins)
+        if (Math.abs(this.edgeAngle) > 0.01 && this.isGrounded) {
             const speedMult = 0.5 + Math.min(this.currentSpeed / 30, 1.5);
             this.rotation += this.edgeAngle * this.turnSpeed * speedMult * delta;
         }
@@ -1629,10 +1634,10 @@ export class Skier {
     }
 
     updateHUD() {
-        // Convert speed to km/h (approximate scaling)
-        const speedKmh = Math.round(this.currentSpeed * 3.6);
+        // Convert speed to mph (approximate scaling: internal units * 2.24)
+        const speedMph = Math.round(this.currentSpeed * 2.24);
         const speedEl = document.getElementById('speed-value');
-        if (speedEl) speedEl.textContent = speedKmh;
+        if (speedEl) speedEl.textContent = speedMph;
 
         // Update score
         const scoreEl = document.getElementById('score-value');
@@ -1651,7 +1656,7 @@ export class Skier {
 
         // Update stats
         const maxSpeedEl = document.getElementById('max-speed-value');
-        if (maxSpeedEl) maxSpeedEl.textContent = Math.round(this.stats.maxSpeed * 3.6);
+        if (maxSpeedEl) maxSpeedEl.textContent = Math.round(this.stats.maxSpeed * 2.24);
 
         const airTimeEl = document.getElementById('air-time-value');
         if (airTimeEl) airTimeEl.textContent = this.stats.totalAirTime.toFixed(1);
@@ -1777,5 +1782,84 @@ export class Skier {
             } catch (e) {}
         }
         this.isAudioInitialized = false;
+    }
+
+    // Play awesome landing sound
+    playLandingSound(points) {
+        try {
+            const ctx = new (window.AudioContext || window.webkitAudioContext)();
+
+            // Create a pleasant "success" sound with multiple harmonics
+            const frequencies = [523.25, 659.25, 783.99]; // C5, E5, G5 (C major chord)
+
+            frequencies.forEach((freq, i) => {
+                const osc = ctx.createOscillator();
+                const gain = ctx.createGain();
+
+                osc.type = 'sine';
+                osc.frequency.value = freq;
+
+                gain.gain.setValueAtTime(0, ctx.currentTime);
+                gain.gain.linearRampToValueAtTime(0.15, ctx.currentTime + 0.02);
+                gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4 + i * 0.1);
+
+                osc.connect(gain);
+                gain.connect(ctx.destination);
+
+                osc.start(ctx.currentTime + i * 0.05);
+                osc.stop(ctx.currentTime + 0.6);
+            });
+
+            // Add a nice "ding" on top for big tricks
+            if (points > 300) {
+                const ding = ctx.createOscillator();
+                const dingGain = ctx.createGain();
+                ding.type = 'sine';
+                ding.frequency.value = 1046.5; // C6
+                dingGain.gain.setValueAtTime(0.2, ctx.currentTime);
+                dingGain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.3);
+                ding.connect(dingGain);
+                dingGain.connect(ctx.destination);
+                ding.start(ctx.currentTime + 0.1);
+                ding.stop(ctx.currentTime + 0.5);
+            }
+        } catch (e) {
+            // Audio not available
+        }
+    }
+
+    // Play crash sound
+    playCrashSound() {
+        try {
+            const ctx = new (window.AudioContext || window.webkitAudioContext)();
+
+            // Create a "thud" sound using noise
+            const bufferSize = ctx.sampleRate * 0.3;
+            const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+            const data = buffer.getChannelData(0);
+
+            for (let i = 0; i < bufferSize; i++) {
+                data[i] = (Math.random() * 2 - 1) * Math.exp(-i / (ctx.sampleRate * 0.05));
+            }
+
+            const source = ctx.createBufferSource();
+            source.buffer = buffer;
+
+            const filter = ctx.createBiquadFilter();
+            filter.type = 'lowpass';
+            filter.frequency.value = 200;
+
+            const gain = ctx.createGain();
+            gain.gain.setValueAtTime(0.3, ctx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.3);
+
+            source.connect(filter);
+            filter.connect(gain);
+            gain.connect(ctx.destination);
+
+            source.start();
+        } catch (e) {
+            // Audio not available
+        }
     }
 }

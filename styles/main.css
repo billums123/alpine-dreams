@@ -255,6 +255,7 @@ body.sculpt-mode {
 #skier-hud .stat-row {
     display: flex;
     justify-content: space-between;
+    gap: 20px;
     font-size: 0.85rem;
     margin-bottom: 6px;
 }
@@ -269,6 +270,7 @@ body.sculpt-mode {
 
 #skier-hud .stat-value {
     font-weight: 600;
+    text-align: right;
 }
 
 /* Controls hint - bottom center */
@@ -294,10 +296,13 @@ body.sculpt-mode {
     top: 40%;
     left: 50%;
     transform: translate(-50%, -50%);
-    font-size: 1.5rem;
+    font-size: 1.3rem;
     font-weight: 600;
-    color: #ffcc00;
-    text-shadow: 0 0 15px rgba(255, 204, 0, 0.5);
+    color: #fff;
+    background: rgba(0, 0, 0, 0.4);
+    padding: 8px 16px;
+    border-radius: 8px;
+    text-shadow: 0 2px 4px rgba(0, 0, 0, 0.5);
     animation: pulse 0.5s ease-in-out infinite;
 }
 
