@@ -355,4 +355,68 @@ export class Decorations {
         pile.userData.placedObject = true;
         return pile;
     }
+
+    createJump() {
+        const jump = new THREE.Group();
+        jump.name = 'snowJump';
+
+        // Ramp material - packed snow/ice
+        const rampMaterial = new THREE.MeshStandardMaterial({
+            color: 0xe8f4f8,
+            roughness: 0.6,
+            flatShading: true
+        });
+
+        // Build ramp from stacked boxes (simple wedge shape)
+        const rampWidth = 3;
+        const rampLength = 4;
+        const rampHeight = 1.5;
+        const steps = 8;
+
+        for (let i = 0; i < steps; i++) {
+            const height = (rampHeight / steps) * (steps - i);
+            const length = (rampLength / steps) * (i + 1);
+            const box = new THREE.Mesh(
+                new THREE.BoxGeometry(rampWidth, height, length / steps + 0.1),
+                this.snowMaterial
+            );
+            box.position.set(0, height / 2, -rampLength / 2 + length - length / steps / 2);
+            box.castShadow = true;
+            box.receiveShadow = true;
+            jump.add(box);
+        }
+
+        // Smooth top surface
+        const topGeometry = new THREE.BoxGeometry(rampWidth - 0.1, 0.15, rampLength);
+        const topSurface = new THREE.Mesh(topGeometry, rampMaterial);
+        topSurface.position.set(0, rampHeight / 2 + 0.1, 0);
+        topSurface.rotation.x = Math.atan2(rampHeight, rampLength);
+        topSurface.castShadow = true;
+        jump.add(topSurface);
+
+        // Lip at top of ramp
+        const lipGeometry = new THREE.BoxGeometry(rampWidth, 0.3, 0.2);
+        const lip = new THREE.Mesh(lipGeometry, rampMaterial);
+        lip.position.set(0, rampHeight + 0.1, -rampLength / 2 + 0.1);
+        jump.add(lip);
+
+        // Side rails
+        const railMaterial = new THREE.MeshStandardMaterial({
+            color: 0xff6600,
+            roughness: 0.5
+        });
+
+        [-rampWidth / 2 - 0.1, rampWidth / 2 + 0.1].forEach(x => {
+            const rail = new THREE.Mesh(
+                new THREE.BoxGeometry(0.1, 0.5, rampLength + 0.5),
+                railMaterial
+            );
+            rail.position.set(x, 0.25, 0);
+            jump.add(rail);
+        });
+
+        jump.userData.placedObject = true;
+        jump.userData.isJump = true;
+        return jump;
+    }
 }

@@ -69,7 +69,8 @@ export class ObjectPlacer {
             'lodge': 'Lodge',
             'pine-tree': 'Pine Tree',
             'flag': 'Marker Flag',
-            'snowman': 'Snowman'
+            'snowman': 'Snowman',
+            'jump': 'Snow Jump'
         };
         return names[objectType] || objectType;
     }
@@ -102,6 +103,9 @@ export class ObjectPlacer {
                 break;
             case 'snowman':
                 this.previewObject = this.decorations.createSnowman();
+                break;
+            case 'jump':
+                this.previewObject = this.decorations.createJump();
                 break;
         }
 
@@ -154,11 +158,12 @@ export class ObjectPlacer {
                 this.previewObject.position.copy(point);
 
                 // Align to terrain normal for certain objects
-                if (['pine-tree', 'flag', 'snowman'].includes(this.currentObjectType)) {
+                if (['pine-tree', 'flag', 'snowman', 'jump'].includes(this.currentObjectType)) {
                     const normal = this.mountain.getNormalAt(point.x, point.z);
-                    // Subtle tilt
-                    this.previewObject.rotation.x = -normal.z * 0.2;
-                    this.previewObject.rotation.z = normal.x * 0.2;
+                    // Subtle tilt (more for jump to align with slope)
+                    const tiltFactor = this.currentObjectType === 'jump' ? 0.5 : 0.2;
+                    this.previewObject.rotation.x = -normal.z * tiltFactor;
+                    this.previewObject.rotation.z = normal.x * tiltFactor;
                 }
 
                 // Update lift preview line
@@ -261,6 +266,9 @@ export class ObjectPlacer {
                 break;
             case 'snowman':
                 newObject = this.decorations.createSnowman();
+                break;
+            case 'jump':
+                newObject = this.decorations.createJump();
                 break;
         }
 

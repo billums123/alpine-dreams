@@ -65,38 +65,55 @@ export class Lodge {
         body.receiveShadow = true;
         lodge.add(body);
 
-        // A-frame roof
-        const roofShape = new THREE.Shape();
-        roofShape.moveTo(-3.5, 0);
-        roofShape.lineTo(0, 2.5);
-        roofShape.lineTo(3.5, 0);
-        roofShape.lineTo(-3.5, 0);
+        // A-frame roof using two angled box planes
+        const roofWidth = 3.8;
+        const roofLength = 5.8;
+        const roofThickness = 0.15;
+        const roofAngle = Math.atan2(2.5, 3.5); // angle of roof slope
 
-        const roofGeometry = new THREE.ExtrudeGeometry(roofShape, {
-            depth: 5.5,
-            bevelEnabled: false
-        });
-        const roof = new THREE.Mesh(roofGeometry, this.roofMaterial);
-        roof.rotation.x = -Math.PI / 2;
-        roof.position.set(0, 3, -2.75);
-        roof.castShadow = true;
-        lodge.add(roof);
+        // Left roof panel
+        const roofPanelGeo = new THREE.BoxGeometry(roofWidth, roofThickness, roofLength);
+        const leftRoof = new THREE.Mesh(roofPanelGeo, this.roofMaterial);
+        leftRoof.position.set(-1.7, 4.2, 0);
+        leftRoof.rotation.z = roofAngle;
+        leftRoof.castShadow = true;
+        lodge.add(leftRoof);
+
+        // Right roof panel
+        const rightRoof = new THREE.Mesh(roofPanelGeo, this.roofMaterial);
+        rightRoof.position.set(1.7, 4.2, 0);
+        rightRoof.rotation.z = -roofAngle;
+        rightRoof.castShadow = true;
+        lodge.add(rightRoof);
+
+        // Front gable (triangular wall piece)
+        const gableShape = new THREE.Shape();
+        gableShape.moveTo(-3, 0);
+        gableShape.lineTo(0, 2.5);
+        gableShape.lineTo(3, 0);
+        gableShape.closePath();
+
+        const gableGeo = new THREE.ShapeGeometry(gableShape);
+        const frontGable = new THREE.Mesh(gableGeo, this.woodMaterial);
+        frontGable.position.set(0, 3, 2.51);
+        lodge.add(frontGable);
+
+        const backGable = new THREE.Mesh(gableGeo, this.woodMaterial);
+        backGable.position.set(0, 3, -2.51);
+        backGable.rotation.y = Math.PI;
+        lodge.add(backGable);
 
         // Snow on roof
-        const snowShape = new THREE.Shape();
-        snowShape.moveTo(-3.3, 0.1);
-        snowShape.lineTo(0, 2.3);
-        snowShape.lineTo(3.3, 0.1);
-        snowShape.lineTo(-3.3, 0.1);
+        const snowPanelGeo = new THREE.BoxGeometry(roofWidth - 0.2, 0.12, roofLength - 0.2);
+        const leftSnow = new THREE.Mesh(snowPanelGeo, this.snowMaterial);
+        leftSnow.position.set(-1.65, 4.35, 0);
+        leftSnow.rotation.z = roofAngle;
+        lodge.add(leftSnow);
 
-        const snowGeometry = new THREE.ExtrudeGeometry(snowShape, {
-            depth: 5.3,
-            bevelEnabled: false
-        });
-        const snowRoof = new THREE.Mesh(snowGeometry, this.snowMaterial);
-        snowRoof.rotation.x = -Math.PI / 2;
-        snowRoof.position.set(0, 3.1, -2.65);
-        lodge.add(snowRoof);
+        const rightSnow = new THREE.Mesh(snowPanelGeo, this.snowMaterial);
+        rightSnow.position.set(1.65, 4.35, 0);
+        rightSnow.rotation.z = -roofAngle;
+        lodge.add(rightSnow);
 
         // Windows (front)
         const windowPositions = [
@@ -218,33 +235,55 @@ export class Lodge {
         main.receiveShadow = true;
         lodge.add(main);
 
-        // Main roof
-        const roofShape = new THREE.Shape();
-        roofShape.moveTo(-5.5, 0);
-        roofShape.lineTo(0, 3.5);
-        roofShape.lineTo(5.5, 0);
-        roofShape.lineTo(-5.5, 0);
+        // A-frame roof using two angled box panels
+        const largeRoofWidth = 6.5;
+        const largeRoofLength = 7.8;
+        const largeRoofThickness = 0.18;
+        const largeRoofAngle = Math.atan2(3.5, 5.5);
 
-        const roofGeometry = new THREE.ExtrudeGeometry(roofShape, {
-            depth: 7.5,
-            bevelEnabled: false
-        });
-        const roof = new THREE.Mesh(roofGeometry, this.roofMaterial);
-        roof.rotation.x = -Math.PI / 2;
-        roof.position.set(0, 4, -3.75);
-        roof.castShadow = true;
-        lodge.add(roof);
+        // Left roof panel
+        const largeRoofPanelGeo = new THREE.BoxGeometry(largeRoofWidth, largeRoofThickness, largeRoofLength);
+        const leftLargeRoof = new THREE.Mesh(largeRoofPanelGeo, this.roofMaterial);
+        leftLargeRoof.position.set(-2.8, 5.6, 0);
+        leftLargeRoof.rotation.z = largeRoofAngle;
+        leftLargeRoof.castShadow = true;
+        lodge.add(leftLargeRoof);
+
+        // Right roof panel
+        const rightLargeRoof = new THREE.Mesh(largeRoofPanelGeo, this.roofMaterial);
+        rightLargeRoof.position.set(2.8, 5.6, 0);
+        rightLargeRoof.rotation.z = -largeRoofAngle;
+        rightLargeRoof.castShadow = true;
+        lodge.add(rightLargeRoof);
+
+        // Front gable (triangular wall piece)
+        const largeGableShape = new THREE.Shape();
+        largeGableShape.moveTo(-5, 0);
+        largeGableShape.lineTo(0, 3.5);
+        largeGableShape.lineTo(5, 0);
+        largeGableShape.closePath();
+
+        const largeGableGeo = new THREE.ShapeGeometry(largeGableShape);
+        const frontLargeGable = new THREE.Mesh(largeGableGeo, this.woodMaterial);
+        frontLargeGable.position.set(0, 4, 3.51);
+        lodge.add(frontLargeGable);
+
+        const backLargeGable = new THREE.Mesh(largeGableGeo, this.woodMaterial);
+        backLargeGable.position.set(0, 4, -3.51);
+        backLargeGable.rotation.y = Math.PI;
+        lodge.add(backLargeGable);
 
         // Snow on roof
-        const snowGeometry = new THREE.ExtrudeGeometry(roofShape, {
-            depth: 7.3,
-            bevelEnabled: false
-        });
-        const snowRoof = new THREE.Mesh(snowGeometry, this.snowMaterial);
-        snowRoof.rotation.x = -Math.PI / 2;
-        snowRoof.position.set(0, 4.15, -3.65);
-        snowRoof.scale.set(0.95, 0.95, 1);
-        lodge.add(snowRoof);
+        const largeSnowPanelGeo = new THREE.BoxGeometry(largeRoofWidth - 0.3, 0.15, largeRoofLength - 0.3);
+        const leftLargeSnow = new THREE.Mesh(largeSnowPanelGeo, this.snowMaterial);
+        leftLargeSnow.position.set(-2.75, 5.75, 0);
+        leftLargeSnow.rotation.z = largeRoofAngle;
+        lodge.add(leftLargeSnow);
+
+        const rightLargeSnow = new THREE.Mesh(largeSnowPanelGeo, this.snowMaterial);
+        rightLargeSnow.position.set(2.75, 5.75, 0);
+        rightLargeSnow.rotation.z = -largeRoofAngle;
+        lodge.add(rightLargeSnow);
 
         // Large windows
         for (let i = -2; i <= 2; i++) {
