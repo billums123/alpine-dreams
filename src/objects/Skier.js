@@ -55,6 +55,12 @@ export class Skier {
         this.flipDirection = 0; // 1 = backflip, -1 = frontflip
         this.trickLanded = false;
 
+        // Spin trick state (horizontal rotation)
+        this.spinRotation = 0; // Current spin angle
+        this.spinVelocity = 0; // Spin angular velocity
+        this.isSpinning = false;
+        this.totalSpinDegrees = 0; // Track total spin for scoring
+
         // Body part references for animation
         this.bodyParts = {
             torso: null,
@@ -645,6 +651,10 @@ export class Skier {
         this.flipRotation = 0;
         this.flipVelocity = 0;
         this.isFlipping = false;
+        this.spinRotation = 0;
+        this.spinVelocity = 0;
+        this.isSpinning = false;
+        this.totalSpinDegrees = 0;
         this.mesh.position.copy(this.position);
     }
 
@@ -690,6 +700,33 @@ export class Skier {
             this.isFlipping = false;
             this.flipRotation = 0;
             this.flipVelocity = 0;
+        }
+    }
+
+    updateSpin(delta) {
+        // Handle spin landing when touching ground
+        if (this.isSpinning && this.isGrounded) {
+            // Check for clean spin landing (180, 360, 540, etc.)
+            const spinDegrees = Math.abs(this.spinRotation) * (180 / Math.PI);
+            const nearestHalf = Math.round(spinDegrees / 180) * 180;
+            const landingError = Math.abs(spinDegrees - nearestHalf);
+
+            // Clean landing if within 30 degrees of a 180 increment
+            const cleanLanding = landingError < 30;
+
+            if (!cleanLanding && spinDegrees > 90) {
+                // Crash on bad spin landing
+                this.currentSpeed *= 0.2;
+            }
+
+            // Apply the spin to actual rotation (land facing new direction)
+            this.rotation += this.spinRotation;
+
+            // Reset spin state
+            this.isSpinning = false;
+            this.spinRotation = 0;
+            this.spinVelocity = 0;
+            this.totalSpinDegrees = 0;
         }
     }
 
@@ -836,8 +873,31 @@ export class Skier {
             // Update currentSpeed from velocity
             this.currentSpeed = Math.sqrt(this.velocity.x * this.velocity.x + this.velocity.z * this.velocity.z);
 
-            // Allow slight air control for steering
-            if (Math.abs(this.edgeAngle) > 0.1) {
+            // SPIN TRICKS - A/D to spin while airborne
+            if (Math.abs(this.edgeAngle) > 0.3) {
+                // Start or continue spinning
+                if (!this.isSpinning) {
+                    this.isSpinning = true;
+                    this.spinRotation = 0;
+                    this.totalSpinDegrees = 0;
+                }
+                // Add spin velocity based on input
+                this.spinVelocity += this.edgeAngle * 15 * delta;
+                // Cap spin speed
+                this.spinVelocity = THREE.MathUtils.clamp(this.spinVelocity, -12, 12);
+            }
+
+            // Apply spin rotation
+            if (this.isSpinning) {
+                this.spinRotation += this.spinVelocity * delta;
+                this.totalSpinDegrees = Math.abs(this.spinRotation) * (180 / Math.PI);
+
+                // Slight air resistance on spin
+                this.spinVelocity *= 0.98;
+            }
+
+            // Also allow slight trajectory adjustment
+            if (Math.abs(this.edgeAngle) > 0.1 && !this.isSpinning) {
                 this.rotation += this.edgeAngle * 0.5 * delta;
             }
         }
@@ -926,8 +986,9 @@ export class Skier {
         // Update mesh position
         this.mesh.position.copy(this.position);
 
-        // Update flip if in air
+        // Update tricks if in air
         this.updateFlip(delta);
+        this.updateSpin(delta);
 
         // Align skier to terrain surface using quaternion
         this.alignToTerrain(terrainNormal);
@@ -1067,6 +1128,13 @@ export class Skier {
             const flipQuat = new THREE.Quaternion();
             flipQuat.setFromAxisAngle(right, this.flipRotation);
             this.mesh.quaternion.multiply(flipQuat);
+        }
+
+        // Apply spin rotation when airborne
+        if (this.isSpinning && !this.isGrounded) {
+            const spinQuat = new THREE.Quaternion();
+            spinQuat.setFromAxisAngle(up, this.spinRotation);
+            this.mesh.quaternion.multiply(spinQuat);
         }
     }
 
@@ -1363,13 +1431,25 @@ export class Skier {
         // Show trick status
         const trickStatus = document.getElementById('trick-status');
         if (trickStatus) {
-            if (this.isFlipping) {
+            if (this.isFlipping && this.isSpinning) {
+                // Combo trick!
+                const flipProgress = Math.abs(this.flipRotation) / (Math.PI * 2) * 100;
+                const flipName = this.flipDirection > 0 ? 'BACKFLIP' : 'FRONTFLIP';
+                const spinDegrees = Math.round(this.totalSpinDegrees / 90) * 90;
+                trickStatus.textContent = `${spinDegrees}° ${flipName}!`;
+                trickStatus.classList.remove('hidden');
+            } else if (this.isFlipping) {
                 const flipProgress = Math.abs(this.flipRotation) / (Math.PI * 2) * 100;
                 const trickName = this.flipDirection > 0 ? 'BACKFLIP' : 'FRONTFLIP';
                 trickStatus.textContent = `${trickName} ${Math.min(100, Math.round(flipProgress))}%`;
                 trickStatus.classList.remove('hidden');
+            } else if (this.isSpinning) {
+                const spinDegrees = Math.round(this.totalSpinDegrees / 90) * 90;
+                const spinName = spinDegrees >= 360 ? `${spinDegrees}° SPIN!` : `${spinDegrees}°`;
+                trickStatus.textContent = spinName;
+                trickStatus.classList.remove('hidden');
             } else if (!this.isGrounded) {
-                trickStatus.textContent = 'AIR! (W=backflip, S=frontflip)';
+                trickStatus.textContent = 'AIR! (A/D=spin, W/S=flip)';
                 trickStatus.classList.remove('hidden');
             } else {
                 trickStatus.classList.add('hidden');
