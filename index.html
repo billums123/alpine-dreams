@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Alpine Dreams - Ski Resort Builder</title>
+    <link rel="stylesheet" href="styles/main.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Quicksand:wght@400;500;600&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div id="app">
+        <canvas id="canvas"></canvas>
+
+        <!-- Minimal UI Overlay -->
+        <div id="ui-overlay">
+            <!-- Title -->
+            <div id="title-bar">
+                <h1>🏔️ Alpine Dreams</h1>
+                <span class="subtitle">Ski Resort Builder</span>
+            </div>
+
+            <!-- Object Palette -->
+            <div id="object-palette">
+                <div class="palette-title">Build</div>
+                <div class="palette-items">
+                    <button class="palette-item" data-object="ski-lift" title="Ski Lift">
+                        <span class="icon">🚡</span>
+                        <span class="label">Lift</span>
+                    </button>
+                    <button class="palette-item" data-object="gondola" title="Gondola">
+                        <span class="icon">🚠</span>
+                        <span class="label">Gondola</span>
+                    </button>
+                    <button class="palette-item" data-object="lodge" title="Lodge">
+                        <span class="icon">🏠</span>
+                        <span class="label">Lodge</span>
+                    </button>
+                    <button class="palette-item" data-object="pine-tree" title="Pine Tree">
+                        <span class="icon">🌲</span>
+                        <span class="label">Tree</span>
+                    </button>
+                    <button class="palette-item" data-object="flag" title="Marker Flag">
+                        <span class="icon">🚩</span>
+                        <span class="label">Flag</span>
+                    </button>
+                    <button class="palette-item" data-object="snowman" title="Snowman">
+                        <span class="icon">⛄</span>
+                        <span class="label">Snowman</span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Controls Hint -->
+            <div id="controls-hint">
+                <div class="hint"><kbd>Click</kbd> Place object</div>
+                <div class="hint"><kbd>R</kbd> Rotate</div>
+                <div class="hint"><kbd>Del</kbd> Remove</div>
+                <div class="hint"><kbd>Scroll</kbd> Zoom</div>
+                <div class="hint"><kbd>Drag</kbd> Pan view</div>
+            </div>
+
+            <!-- Mode Indicator -->
+            <div id="mode-indicator" class="hidden">
+                <span class="mode-text">Placing: Ski Lift</span>
+                <button id="cancel-placement" title="Cancel (Esc)">✕</button>
+            </div>
+
+            <!-- Quick Actions -->
+            <div id="quick-actions">
+                <button id="btn-clear" title="Clear All">🗑️</button>
+                <button id="btn-random" title="Auto-Generate Resort">✨</button>
+                <button id="btn-screenshot" title="Take Screenshot">📷</button>
+                <button id="btn-toggle-snow" title="Toggle Snow">❄️</button>
+            </div>
+        </div>
+
+        <!-- Loading Screen -->
+        <div id="loading-screen">
+            <div class="loader">
+                <div class="snowflake">❄️</div>
+                <p>Building your mountain...</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Import Map for ES Modules -->
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://cdn.jsdelivr.net/npm/three@0.161.0/build/three.module.js",
+            "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.161.0/examples/jsm/"
+        }
+    }
+    </script>
+
+    <script type="module" src="src/main.js"></script>
+</body>
+</html>
