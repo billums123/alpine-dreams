@@ -469,26 +469,29 @@ export class ObjectPlacer {
     autoGenerate() {
         this.clearAll();
 
+        // Scale for 600x600 terrain
+        const scale = 5;
+
         // Add some ski lifts
         const lift1 = this.skiLift.createLift(
-            new THREE.Vector3(-15, this.mountain.getHeightAt(-15, 20), 20),
-            new THREE.Vector3(-8, this.mountain.getHeightAt(-8, -20), -20),
+            new THREE.Vector3(-80, this.mountain.getHeightAt(-80, 100), 100),
+            new THREE.Vector3(-40, this.mountain.getHeightAt(-40, -100), -100),
             false
         );
         this.placedObjects.push({ type: 'ski-lift', object: lift1 });
 
         const gondola = this.skiLift.createLift(
-            new THREE.Vector3(20, this.mountain.getHeightAt(20, 15), 15),
-            new THREE.Vector3(25, this.mountain.getHeightAt(25, -15), -15),
+            new THREE.Vector3(100, this.mountain.getHeightAt(100, 80), 80),
+            new THREE.Vector3(120, this.mountain.getHeightAt(120, -80), -80),
             true
         );
         this.placedObjects.push({ type: 'gondola', object: gondola });
 
-        // Add lodges
+        // Add lodges at base area
         const lodgePositions = [
-            { x: 0, z: 30 },
-            { x: -20, z: 25 },
-            { x: 25, z: 28 }
+            { x: 0, z: 150 },
+            { x: -100, z: 130 },
+            { x: 120, z: 140 }
         ];
 
         lodgePositions.forEach(pos => {
@@ -503,11 +506,11 @@ export class ObjectPlacer {
 
         // Add flags along ski runs
         const flagPositions = [
-            { x: -5, z: -15 },
-            { x: -3, z: 0 },
-            { x: 5, z: 15 },
-            { x: 22, z: -5 },
-            { x: 18, z: 10 }
+            { x: -30, z: -80 },
+            { x: -15, z: 0 },
+            { x: 25, z: 80 },
+            { x: 110, z: -30 },
+            { x: 90, z: 50 }
         ];
 
         flagPositions.forEach(pos => {
@@ -519,10 +522,10 @@ export class ObjectPlacer {
             this.placedObjects.push({ type: 'flag', object: flag });
         });
 
-        // Add snowmen
+        // Add snowmen near lodges
         const snowmanPositions = [
-            { x: 5, z: 28 },
-            { x: -25, z: 22 }
+            { x: 25, z: 140 },
+            { x: -120, z: 120 }
         ];
 
         snowmanPositions.forEach(pos => {
@@ -533,6 +536,132 @@ export class ObjectPlacer {
             this.scene.add(snowman);
             this.placedObjects.push({ type: 'snowman', object: snowman });
         });
+
+        // Add jump ramps for tricks - placed on slopes for natural runs
+        const jumpPositions = [
+            { x: -50, z: -40, rot: 0 },
+            { x: -20, z: 30, rot: 0.2 },
+            { x: 40, z: -20, rot: -0.3 },
+            { x: 80, z: 20, rot: 0.1 },
+            { x: -70, z: 60, rot: 0.4 },
+            { x: 10, z: -60, rot: -0.1 },
+            { x: 60, z: 70, rot: 0.2 },
+            { x: -30, z: -100, rot: 0 }
+        ];
+
+        jumpPositions.forEach(pos => {
+            const jump = this.decorations.createJump();
+            const height = this.mountain.getHeightAt(pos.x, pos.z);
+            jump.position.set(pos.x, height, pos.z);
+
+            // Align jump to face downhill
+            const normal = this.mountain.getNormalAt(pos.x, pos.z);
+            const downhillAngle = Math.atan2(normal.x, normal.z);
+            jump.rotation.y = downhillAngle + pos.rot;
+
+            // Tilt to match slope
+            jump.rotation.x = -normal.z * 0.3;
+            jump.rotation.z = normal.x * 0.3;
+
+            jump.userData.type = 'jump';
+            jump.userData.placedObject = true;
+            jump.userData.isJump = true;
+            this.scene.add(jump);
+            this.placedObjects.push({ type: 'jump', object: jump });
+        });
+    }
+
+    // Generate a trick park with lots of jumps
+    generateTrickPark() {
+        this.clearAll();
+
+        // Create a series of jumps going down the mountain
+        // Main run - center of mountain
+        const mainRunJumps = [];
+        for (let i = 0; i < 12; i++) {
+            const z = -120 + i * 25; // Spread down the mountain
+            const x = Math.sin(i * 0.5) * 30; // Slight weave
+            mainRunJumps.push({ x, z, rot: 0, size: 1 + Math.random() * 0.5 });
+        }
+
+        // Left run
+        const leftRunJumps = [];
+        for (let i = 0; i < 8; i++) {
+            const z = -100 + i * 30;
+            const x = -80 + Math.sin(i * 0.7) * 20;
+            leftRunJumps.push({ x, z, rot: 0.3, size: 0.8 + Math.random() * 0.4 });
+        }
+
+        // Right run
+        const rightRunJumps = [];
+        for (let i = 0; i < 8; i++) {
+            const z = -100 + i * 30;
+            const x = 80 + Math.sin(i * 0.6) * 15;
+            rightRunJumps.push({ x, z, rot: -0.2, size: 0.8 + Math.random() * 0.4 });
+        }
+
+        // Big air jumps (larger, spaced out)
+        const bigAirJumps = [
+            { x: 0, z: -80, rot: 0, size: 1.5 },
+            { x: -50, z: -30, rot: 0.2, size: 1.4 },
+            { x: 50, z: 0, rot: -0.15, size: 1.4 },
+            { x: 0, z: 50, rot: 0, size: 1.6 },
+        ];
+
+        const allJumps = [...mainRunJumps, ...leftRunJumps, ...rightRunJumps, ...bigAirJumps];
+
+        allJumps.forEach(pos => {
+            const jump = this.decorations.createJump();
+            const height = this.mountain.getHeightAt(pos.x, pos.z);
+
+            // Skip if too low (flat area)
+            if (height < 2) return;
+
+            jump.position.set(pos.x, height, pos.z);
+
+            // Scale the jump
+            jump.scale.setScalar(pos.size || 1);
+
+            // Align jump to face downhill
+            const normal = this.mountain.getNormalAt(pos.x, pos.z);
+            const downhillAngle = Math.atan2(normal.x, normal.z);
+            jump.rotation.y = downhillAngle + (pos.rot || 0);
+
+            // Tilt to match slope
+            jump.rotation.x = -normal.z * 0.3;
+            jump.rotation.z = normal.x * 0.3;
+
+            jump.userData.type = 'jump';
+            jump.userData.placedObject = true;
+            jump.userData.isJump = true;
+            this.scene.add(jump);
+            this.placedObjects.push({ type: 'jump', object: jump });
+        });
+
+        // Add some flags to mark the runs
+        const flagPositions = [
+            { x: 0, z: -130 },
+            { x: -80, z: -110 },
+            { x: 80, z: -110 },
+            { x: 0, z: 120 },
+        ];
+
+        flagPositions.forEach(pos => {
+            const flag = this.decorations.createFlag('blue');
+            flag.position.set(pos.x, this.mountain.getHeightAt(pos.x, pos.z), pos.z);
+            flag.userData.type = 'flag';
+            flag.userData.placedObject = true;
+            this.scene.add(flag);
+            this.placedObjects.push({ type: 'flag', object: flag });
+        });
+
+        // Add a lodge at the base
+        const lodge = this.lodge.create();
+        lodge.position.set(0, this.mountain.getHeightAt(0, 160), 160);
+        lodge.userData.type = 'lodge';
+        lodge.userData.placedObject = true;
+        this.scene.add(lodge);
+        this.placedObjects.push({ type: 'lodge', object: lodge });
     }
 
     // Update animated objects

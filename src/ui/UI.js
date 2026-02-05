@@ -277,6 +277,16 @@ export class UI {
             this.showNotification('Resort generated! ✨');
         });
 
+        // Generate trick park
+        const trickParkBtn = document.getElementById('btn-trick-park');
+        if (trickParkBtn) {
+            trickParkBtn.addEventListener('click', () => {
+                this.objectPlacer.generateTrickPark();
+                this.cancelPlacement();
+                this.showNotification('Trick park generated! 🎿');
+            });
+        }
+
         // Screenshot
         document.getElementById('btn-screenshot').addEventListener('click', () => {
             this.sceneManager.screenshot();
