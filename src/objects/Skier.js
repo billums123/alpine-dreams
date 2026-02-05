@@ -770,8 +770,8 @@ export class Skier {
             // Clean landing if within 50 degrees of a 180 increment (more forgiving)
             const cleanLanding = landingError < 50;
 
-            // Track spin for scoring
-            if (spinDegrees >= 90) {
+            // Track spin for scoring (180 degree increments)
+            if (spinDegrees >= 180) {
                 this.currentTrick.spinDegrees = nearestHalf;
             }
 
@@ -779,8 +779,8 @@ export class Skier {
                 // Crash on bad spin landing
                 this.currentSpeed *= 0.2;
                 this.awardTrickPoints(false); // Failed landing
-            } else if (spinDegrees >= 90) {
-                this.awardTrickPoints(true); // Clean landing
+            } else if (spinDegrees >= 180) {
+                this.awardTrickPoints(true); // Clean landing - only award for 180+
             }
 
             // Apply the spin to actual rotation (land facing new direction)
@@ -1671,8 +1671,8 @@ export class Skier {
                 // Combo trick!
                 const flipProgress = Math.abs(this.flipRotation) / (Math.PI * 2) * 100;
                 const flipName = this.flipDirection > 0 ? 'BACKFLIP' : 'FRONTFLIP';
-                const spinDegrees = Math.round(this.totalSpinDegrees / 90) * 90;
-                trickStatus.textContent = `${spinDegrees}° ${flipName}!`;
+                const spinDegrees = Math.round(this.totalSpinDegrees / 180) * 180;
+                trickStatus.textContent = spinDegrees >= 180 ? `${spinDegrees}° ${flipName}!` : `${flipName}!`;
                 trickStatus.classList.remove('hidden');
             } else if (this.isFlipping) {
                 const flipProgress = Math.abs(this.flipRotation) / (Math.PI * 2) * 100;
@@ -1680,8 +1680,8 @@ export class Skier {
                 trickStatus.textContent = `${trickName} ${Math.min(100, Math.round(flipProgress))}%`;
                 trickStatus.classList.remove('hidden');
             } else if (this.isSpinning) {
-                const spinDegrees = Math.round(this.totalSpinDegrees / 90) * 90;
-                const spinName = spinDegrees >= 360 ? `${spinDegrees}° SPIN!` : `${spinDegrees}°`;
+                const spinDegrees = Math.round(this.totalSpinDegrees / 180) * 180;
+                const spinName = spinDegrees >= 180 ? `${spinDegrees}°` : 'SPINNING...';
                 trickStatus.textContent = spinName;
                 trickStatus.classList.remove('hidden');
             } else if (!this.isGrounded) {
