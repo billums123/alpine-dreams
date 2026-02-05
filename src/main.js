@@ -13,6 +13,7 @@ import { ObjectPlacer } from './controls/ObjectPlacer.js';
 import { CameraControls } from './controls/CameraControls.js';
 import { Skier } from './objects/Skier.js';
 import { UI } from './ui/UI.js';
+import { Music } from './audio/Music.js';
 
 class AlpineDreams {
     constructor() {
@@ -26,6 +27,7 @@ class AlpineDreams {
         this.cameraControls = null;
         this.skier = null;
         this.ui = null;
+        this.music = null;
 
         this.isInitialized = false;
     }
@@ -81,6 +83,10 @@ class AlpineDreams {
             // Initialize UI
             this.ui = new UI(this.objectPlacer, this.snow, this.sceneManager, this.mountain, this.skier, this.trees, this.cameraControls);
             this.ui.init();
+
+            // Initialize background music (starts on first user interaction)
+            this.music = new Music();
+            this.music.init();
 
             // Start render loop
             this.sceneManager.onUpdate = (delta) => this.update(delta);

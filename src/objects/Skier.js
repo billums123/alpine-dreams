@@ -640,17 +640,17 @@ export class Skier {
             case 'ArrowUp':
                 this.input.forward = true;
                 this.input.tuck = true;
-                // Initiate backflip if airborne and not already flipping
+                // Initiate frontflip if airborne and not already flipping (W = forward rotation)
                 if (!this.isGrounded && !this.isFlipping && this.verticalVelocity > 0) {
-                    this.startFlip(1); // Backflip
+                    this.startFlip(-1); // Frontflip (rotate forward)
                 }
                 break;
             case 'KeyS':
             case 'ArrowDown':
                 this.input.backward = true;
-                // Initiate frontflip if airborne and not already flipping
+                // Initiate backflip if airborne and not already flipping (S = backward rotation)
                 if (!this.isGrounded && !this.isFlipping && this.verticalVelocity > 0) {
-                    this.startFlip(-1); // Frontflip
+                    this.startFlip(1); // Backflip (rotate backward)
                 }
                 break;
             case 'KeyA':
