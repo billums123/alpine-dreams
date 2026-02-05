@@ -313,12 +313,17 @@ export class Skier {
         const terrainNormal = this.mountain.getNormalAt(this.position.x, this.position.z);
         const slope = this.mountain.getSlopeAt(this.position.x, this.position.z);
 
-        // Calculate slope direction (direction of steepest descent)
+        // Calculate slope direction (direction of steepest DESCENT - downhill)
+        // The normal's x,z components point in the uphill direction when positive
+        // So we use them directly (not negated) for downhill
         const slopeDir = new THREE.Vector3(
-            -terrainNormal.x,
+            terrainNormal.x,
             0,
-            -terrainNormal.z
-        ).normalize();
+            terrainNormal.z
+        );
+        if (slopeDir.lengthSq() > 0.0001) {
+            slopeDir.normalize();
+        }
 
         // Forward direction based on skier rotation
         const forward = new THREE.Vector3(
@@ -331,29 +336,32 @@ export class Skier {
         let turnAmount = 0;
         if (this.input.left) {
             turnAmount = 1;
-            this.edgeAngle = THREE.MathUtils.lerp(this.edgeAngle, -0.4, 0.1);
+            this.edgeAngle = THREE.MathUtils.lerp(this.edgeAngle, -0.5, 0.12);
         } else if (this.input.right) {
             turnAmount = -1;
-            this.edgeAngle = THREE.MathUtils.lerp(this.edgeAngle, 0.4, 0.1);
+            this.edgeAngle = THREE.MathUtils.lerp(this.edgeAngle, 0.5, 0.12);
         } else {
             this.edgeAngle = THREE.MathUtils.lerp(this.edgeAngle, 0, 0.15);
         }
 
         // Turn rate depends on speed (harder to turn at low speed)
-        const speedFactor = Math.min(1, this.currentSpeed / 10);
+        const speedFactor = Math.min(1, this.currentSpeed / 8);
         this.rotation += turnAmount * this.turnSpeed * speedFactor * delta;
 
         // Gravity along slope
         if (this.isGrounded) {
-            // Project gravity onto slope
-            const gravityForce = this.gravity * slope * (1 - Math.abs(terrainNormal.y) * 0.3);
+            // Calculate gravity force based on slope steepness
+            // steeper slope = more gravity force
+            const slopeMagnitude = Math.sqrt(terrainNormal.x * terrainNormal.x + terrainNormal.z * terrainNormal.z);
+            const gravityForce = this.gravity * slopeMagnitude;
 
-            // Apply gravity in slope direction
+            // Apply gravity in downhill direction
             this.velocity.x += slopeDir.x * gravityForce * delta;
             this.velocity.z += slopeDir.z * gravityForce * delta;
 
             // Edge carving force (perpendicular to forward direction)
-            if (Math.abs(this.edgeAngle) > 0.1) {
+            // This creates the turning force when carving
+            if (Math.abs(this.edgeAngle) > 0.05 && this.currentSpeed > 1) {
                 const perpendicular = new THREE.Vector3(-forward.z, 0, forward.x);
                 const edgeForce = this.edgeAngle * this.edgingForce * speedFactor;
                 this.velocity.x += perpendicular.x * edgeForce * delta;
@@ -362,21 +370,27 @@ export class Skier {
 
             // Forward/backward control
             if (this.input.forward) {
-                // Tuck position - reduce drag, slight acceleration
-                this.velocity.x += forward.x * this.acceleration * 0.5 * delta;
-                this.velocity.z += forward.z * this.acceleration * 0.5 * delta;
+                // Tuck position - reduce drag, slight push in current direction
+                const moveDir = this.velocity.lengthSq() > 0.1 ? this.velocity.clone().normalize() : forward;
+                this.velocity.x += moveDir.x * this.acceleration * 0.3 * delta;
+                this.velocity.z += moveDir.z * this.acceleration * 0.3 * delta;
             }
             if (this.input.backward) {
                 // Snow plow - braking
-                const brakeDir = this.velocity.clone().normalize();
-                this.velocity.x -= brakeDir.x * this.brakeForce * delta;
-                this.velocity.z -= brakeDir.z * this.brakeForce * delta;
+                if (this.currentSpeed > 0.5) {
+                    const brakeDir = this.velocity.clone().normalize();
+                    this.velocity.x -= brakeDir.x * this.brakeForce * delta;
+                    this.velocity.z -= brakeDir.z * this.brakeForce * delta;
+                } else {
+                    this.velocity.multiplyScalar(0.9);
+                }
             }
 
-            // Friction (higher when edging)
-            const frictionMultiplier = 1 + Math.abs(this.edgeAngle) * 2;
-            this.velocity.x *= (1 - this.friction * frictionMultiplier);
-            this.velocity.z *= (1 - this.friction * frictionMultiplier);
+            // Friction (higher when edging hard)
+            const frictionMultiplier = 1 + Math.abs(this.edgeAngle) * 3;
+            const frictionForce = this.friction * frictionMultiplier;
+            this.velocity.x *= (1 - frictionForce);
+            this.velocity.z *= (1 - frictionForce);
 
             // Jump
             if (this.input.jump) {
@@ -426,16 +440,11 @@ export class Skier {
         this.position.x = THREE.MathUtils.clamp(this.position.x, -halfWidth, halfWidth);
         this.position.z = THREE.MathUtils.clamp(this.position.z, -halfDepth, halfDepth);
 
-        // Update mesh
+        // Update mesh position
         this.mesh.position.copy(this.position);
-        this.mesh.rotation.y = this.rotation;
-        this.mesh.rotation.z = this.edgeAngle * 0.5; // Visual lean
 
-        // Align to terrain when grounded
-        if (this.isGrounded) {
-            const terrainNormalAtPos = this.mountain.getNormalAt(this.position.x, this.position.z);
-            this.mesh.rotation.x = -terrainNormalAtPos.z * 0.3;
-        }
+        // Align skier to terrain surface using quaternion
+        this.alignToTerrain(terrainNormal);
 
         // Update camera
         this.updateCamera(delta);
@@ -445,6 +454,43 @@ export class Skier {
 
         // Update HUD
         this.updateHUD();
+    }
+
+    // Properly align skier mesh to terrain surface
+    alignToTerrain(terrainNormal) {
+        // Get the up vector (terrain normal)
+        const up = terrainNormal.clone().normalize();
+
+        // Forward direction based on skier's facing rotation
+        let forward = new THREE.Vector3(
+            Math.sin(this.rotation),
+            0,
+            Math.cos(this.rotation)
+        );
+
+        // Project forward onto the terrain plane (perpendicular to normal)
+        forward.sub(up.clone().multiplyScalar(forward.dot(up)));
+        forward.normalize();
+
+        // Right vector (cross product of up and forward)
+        const right = new THREE.Vector3().crossVectors(up, forward).normalize();
+
+        // Recalculate forward to ensure orthogonality
+        forward.crossVectors(right, up).normalize();
+
+        // Build rotation matrix from these vectors
+        const rotationMatrix = new THREE.Matrix4();
+        rotationMatrix.makeBasis(right, up, forward);
+
+        // Apply rotation to mesh
+        this.mesh.quaternion.setFromRotationMatrix(rotationMatrix);
+
+        // Apply edge lean (rotate around forward axis)
+        if (Math.abs(this.edgeAngle) > 0.01) {
+            const leanQuat = new THREE.Quaternion();
+            leanQuat.setFromAxisAngle(forward, -this.edgeAngle * 0.6);
+            this.mesh.quaternion.multiply(leanQuat);
+        }
     }
 
     updateCamera(delta) {
