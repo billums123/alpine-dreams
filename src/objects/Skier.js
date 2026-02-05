@@ -38,6 +38,10 @@ export class Skier {
         this.collisionRaycaster = new THREE.Raycaster();
         this.lastJumpRampTime = 0;
 
+        // For natural launch detection - track terrain curvature
+        this.lastTerrainSlope = 0;
+        this.lastSlopeChangeTime = 0;
+
         // State
         this.isGrounded = true;
         this.isJumping = false;
@@ -801,9 +805,22 @@ export class Skier {
             this.velocity.x = forward.x * this.currentSpeed;
             this.velocity.z = forward.z * this.currentSpeed;
 
-            // JUMP
+            // JUMP - manual jump adds to any natural launch for extra height
             if (this.input.jump) {
-                this.verticalVelocity = this.jumpForce;
+                // Check if we're about to naturally launch (for timed jump bonus)
+                const nextX = this.position.x + this.velocity.x * delta;
+                const nextZ = this.position.z + this.velocity.z * delta;
+                const nextTerrainHeight = this.mountain.getHeightAt(nextX, nextZ);
+                const upcomingDrop = terrainHeight - nextTerrainHeight;
+
+                // Timed jump bonus - if jumping right before a drop, get extra height
+                let jumpBoost = this.jumpForce;
+                if (upcomingDrop > 0.2 && this.currentSpeed > 10) {
+                    // Perfect timing! Add speed-based bonus
+                    jumpBoost += this.currentSpeed * 0.1;
+                }
+
+                this.verticalVelocity = jumpBoost;
                 this.isGrounded = false;
                 this.isJumping = true;
                 this.input.jump = false;
@@ -834,9 +851,56 @@ export class Skier {
 
         // Handle vertical movement
         if (this.isGrounded && !this.isJumping) {
-            // When grounded, always stick to terrain
-            this.position.y = newTerrainHeight;
-            this.verticalVelocity = 0;
+            // Calculate current slope in direction of travel
+            // Positive = going uphill, Negative = going downhill
+            const lookAheadDist = 1.5;
+            const aheadX = this.position.x + forward.x * lookAheadDist;
+            const aheadZ = this.position.z + forward.z * lookAheadDist;
+            const aheadHeight = this.mountain.getHeightAt(aheadX, aheadZ);
+            const currentSlope = (aheadHeight - terrainHeight) / lookAheadDist;
+
+            // Detect inflection point - slope changing from "less steep" to "more steep" downward
+            // This is the lip of a jump where terrain curves away
+            const slopeChange = currentSlope - this.lastTerrainSlope;
+            const now = performance.now();
+
+            // Natural launch conditions:
+            // 1. Slope is getting MORE negative (terrain curving away/down)
+            // 2. Going fast enough
+            // 3. Significant slope change (inflection point)
+            // 4. Not just triggered a launch
+            const minLaunchSpeed = 12;
+            const inflectionThreshold = -0.15; // Slope must change this much toward steeper downhill
+            const timeSinceLastLaunch = now - this.lastSlopeChangeTime;
+
+            if (slopeChange < inflectionThreshold &&
+                this.currentSpeed > minLaunchSpeed &&
+                timeSinceLastLaunch > 500) {
+
+                // Calculate launch velocity based on speed and how sharp the inflection is
+                const speedFactor = this.currentSpeed / this.maxSpeed;
+                const inflectionStrength = Math.min(Math.abs(slopeChange) * 3, 1.5);
+
+                // Natural launch - converts forward momentum to vertical at inflection
+                this.verticalVelocity = this.currentSpeed * 0.12 * inflectionStrength + 1.5;
+
+                // Cap natural launch velocity
+                this.verticalVelocity = Math.min(this.verticalVelocity, 8);
+
+                this.isGrounded = false;
+                this.isJumping = true;
+                this.lastSlopeChangeTime = now;
+
+                // Keep current height momentarily
+                this.position.y = terrainHeight;
+            } else {
+                // Normal grounded movement - stick to terrain
+                this.position.y = newTerrainHeight;
+                this.verticalVelocity = 0;
+            }
+
+            // Store slope for next frame
+            this.lastTerrainSlope = currentSlope;
         } else {
             // In the air - apply vertical velocity
             this.position.y += this.verticalVelocity * delta;
