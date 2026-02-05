@@ -118,9 +118,40 @@
 
             <!-- Skier HUD (shown during ski mode) -->
             <div id="skier-hud" class="hidden">
-                <div class="speed-display"><span id="speed-value">0</span> <small>km/h</small></div>
-                <div class="speed-label">Speed</div>
+                <!-- Score display (top center) -->
+                <div class="score-display">
+                    <div class="score-value"><span id="score-value">0</span></div>
+                    <div class="score-label">SCORE</div>
+                    <div class="combo-display hidden">
+                        <span id="combo-value">1.0x</span> COMBO
+                    </div>
+                </div>
+
+                <!-- Speed display (bottom left) -->
+                <div class="speed-display">
+                    <span id="speed-value">0</span> <small>km/h</small>
+                </div>
+
+                <!-- Stats panel (bottom right) -->
+                <div class="stats-panel">
+                    <div class="stat-row">
+                        <span class="stat-label">Max Speed</span>
+                        <span class="stat-value"><span id="max-speed-value">0</span> km/h</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label">Air Time</span>
+                        <span class="stat-value"><span id="air-time-value">0.0</span>s</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label">Tricks</span>
+                        <span class="stat-value"><span id="tricks-value">0</span></span>
+                    </div>
+                </div>
+
+                <!-- Trick status (center) -->
                 <div id="trick-status" class="hidden"></div>
+
+                <!-- Controls hint -->
                 <div class="controls-info">
                     <kbd>A/D</kbd> Turn/Spin · <kbd>W</kbd> Tuck · <kbd>S</kbd> Brake · <kbd>Space</kbd> Jump · <kbd>W/S</kbd> Flip · <kbd>R</kbd> Reset
                 </div>

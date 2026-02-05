@@ -61,6 +61,33 @@ export class Skier {
         this.isSpinning = false;
         this.totalSpinDegrees = 0; // Track total spin for scoring
 
+        // SCORING SYSTEM
+        this.score = 0;
+        this.comboMultiplier = 1;
+        this.comboTimer = 0;
+        this.lastTrickTime = 0;
+
+        // RUN STATISTICS
+        this.stats = {
+            maxSpeed: 0,
+            totalAirTime: 0,
+            currentAirTime: 0,
+            tricksLanded: 0,
+            tricksFailed: 0,
+            totalSpins: 0,
+            totalFlips: 0,
+            bestCombo: 0,
+            runStartTime: 0
+        };
+
+        // Track current trick for scoring on landing
+        this.currentTrick = {
+            spinDegrees: 0,
+            hasFlip: false,
+            flipDirection: 0,
+            startTime: 0
+        };
+
         // Body part references for animation
         this.bodyParts = {
             torso: null,
@@ -517,6 +544,22 @@ export class Skier {
         this.isJumping = false;
         this.edgeAngle = 0;
 
+        // Reset scoring and stats
+        this.score = 0;
+        this.comboMultiplier = 1;
+        this.lastTrickTime = 0;
+        this.stats = {
+            maxSpeed: 0,
+            totalAirTime: 0,
+            currentAirTime: 0,
+            tricksLanded: 0,
+            tricksFailed: 0,
+            totalSpins: 0,
+            totalFlips: 0,
+            bestCombo: 0,
+            runStartTime: performance.now()
+        };
+
         // Add to scene
         this.scene.add(this.mesh);
 
@@ -691,9 +734,21 @@ export class Skier {
             const cleanLanding = landingAngle < 0.5 || landingAngle > Math.PI * 2 - 0.5 ||
                                  (landingAngle > Math.PI - 0.5 && landingAngle < Math.PI + 0.5);
 
-            if (!cleanLanding) {
+            // Track flip for scoring
+            const numFlips = Math.floor(Math.abs(this.flipRotation) / (Math.PI * 2));
+            if (numFlips > 0) {
+                this.currentTrick.hasFlip = true;
+                this.currentTrick.flipDirection = this.flipDirection;
+                this.currentTrick.numFlips = numFlips;
+            }
+
+            if (!cleanLanding && Math.abs(this.flipRotation) > Math.PI * 0.5) {
                 // Crash! Lose most speed
                 this.currentSpeed *= 0.1;
+                this.awardTrickPoints(false); // Failed landing
+            } else if (cleanLanding && numFlips > 0 && !this.isSpinning) {
+                // Clean flip landing (no spin involved) - award points
+                this.awardTrickPoints(true);
             }
 
             // Reset flip state
@@ -714,9 +769,17 @@ export class Skier {
             // Clean landing if within 30 degrees of a 180 increment
             const cleanLanding = landingError < 30;
 
+            // Track spin for scoring
+            if (spinDegrees >= 90) {
+                this.currentTrick.spinDegrees = nearestHalf;
+            }
+
             if (!cleanLanding && spinDegrees > 90) {
                 // Crash on bad spin landing
                 this.currentSpeed *= 0.2;
+                this.awardTrickPoints(false); // Failed landing
+            } else if (spinDegrees >= 90) {
+                this.awardTrickPoints(true); // Clean landing
             }
 
             // Apply the spin to actual rotation (land facing new direction)
@@ -728,6 +791,99 @@ export class Skier {
             this.spinVelocity = 0;
             this.totalSpinDegrees = 0;
         }
+    }
+
+    // Calculate and award points for trick
+    awardTrickPoints(cleanLanding) {
+        let points = 0;
+        let trickName = '';
+
+        // Spin points: 180=100, 360=250, 540=500, 720=800, etc.
+        const spinDegrees = this.currentTrick.spinDegrees || 0;
+        if (spinDegrees >= 180) {
+            const spinPoints = {
+                180: 100,
+                360: 250,
+                540: 500,
+                720: 800,
+                900: 1200,
+                1080: 1800
+            };
+            points += spinPoints[spinDegrees] || spinDegrees * 2;
+            trickName = `${spinDegrees}°`;
+            this.stats.totalSpins++;
+        }
+
+        // Flip points: single=300, double=700, triple=1200
+        if (this.currentTrick.hasFlip) {
+            const numFlips = this.currentTrick.numFlips || 1;
+            const flipPoints = [0, 300, 700, 1200, 2000];
+            points += flipPoints[Math.min(numFlips, 4)];
+            const flipName = this.currentTrick.flipDirection > 0 ? 'Backflip' : 'Frontflip';
+            trickName = trickName ? `${trickName} ${flipName}` : flipName;
+            if (numFlips > 1) trickName = `${numFlips}x ${trickName}`;
+            this.stats.totalFlips++;
+        }
+
+        if (points > 0) {
+            if (cleanLanding) {
+                // Apply combo multiplier
+                const now = performance.now();
+                if (now - this.lastTrickTime < 3000) {
+                    this.comboMultiplier = Math.min(this.comboMultiplier + 0.5, 4);
+                } else {
+                    this.comboMultiplier = 1;
+                }
+                this.lastTrickTime = now;
+
+                // Style bonus for clean landing
+                points = Math.round(points * 1.2 * this.comboMultiplier);
+                this.score += points;
+                this.stats.tricksLanded++;
+                this.stats.bestCombo = Math.max(this.stats.bestCombo, this.comboMultiplier);
+
+                // Show points popup
+                this.showPointsPopup(`${trickName}! +${points}`, true);
+            } else {
+                // Failed landing - no points, reset combo
+                this.comboMultiplier = 1;
+                this.stats.tricksFailed++;
+                this.showPointsPopup(`${trickName} - CRASH!`, false);
+            }
+        }
+
+        // Reset current trick
+        this.currentTrick = {
+            spinDegrees: 0,
+            hasFlip: false,
+            flipDirection: 0,
+            numFlips: 0,
+            startTime: 0
+        };
+    }
+
+    // Show floating points notification
+    showPointsPopup(text, success) {
+        const popup = document.createElement('div');
+        popup.className = 'points-popup ' + (success ? 'success' : 'fail');
+        popup.textContent = text;
+        popup.style.cssText = `
+            position: fixed;
+            top: 35%;
+            left: 50%;
+            transform: translateX(-50%);
+            font-family: 'Quicksand', sans-serif;
+            font-size: ${success ? '1.5rem' : '1.2rem'};
+            font-weight: 600;
+            color: ${success ? '#4ade80' : '#f87171'};
+            text-shadow: 0 2px 4px rgba(0,0,0,0.5);
+            pointer-events: none;
+            z-index: 1000;
+            animation: pointsFloat 1.5s ease-out forwards;
+        `;
+        document.body.appendChild(popup);
+
+        setTimeout(() => popup.remove(), 1500);
     }
 
     onKeyUp(e) {
@@ -766,6 +922,21 @@ export class Skier {
 
         // Clamp delta to prevent physics explosions
         delta = Math.min(delta, 0.05);
+
+        // TRACK STATISTICS
+        // Max speed
+        if (this.currentSpeed > this.stats.maxSpeed) {
+            this.stats.maxSpeed = this.currentSpeed;
+        }
+
+        // Air time tracking
+        if (!this.isGrounded) {
+            this.stats.currentAirTime += delta;
+        } else if (this.stats.currentAirTime > 0) {
+            // Just landed - add to total and reset
+            this.stats.totalAirTime += this.stats.currentAirTime;
+            this.stats.currentAirTime = 0;
+        }
 
         // Get terrain data at current position
         const terrainHeight = this.mountain.getHeightAt(this.position.x, this.position.z);
@@ -1460,7 +1631,33 @@ export class Skier {
     updateHUD() {
         // Convert speed to km/h (approximate scaling)
         const speedKmh = Math.round(this.currentSpeed * 3.6);
-        document.getElementById('speed-value').textContent = speedKmh;
+        const speedEl = document.getElementById('speed-value');
+        if (speedEl) speedEl.textContent = speedKmh;
+
+        // Update score
+        const scoreEl = document.getElementById('score-value');
+        if (scoreEl) scoreEl.textContent = this.score.toLocaleString();
+
+        // Update combo
+        const comboEl = document.getElementById('combo-value');
+        if (comboEl) {
+            if (this.comboMultiplier > 1) {
+                comboEl.textContent = `${this.comboMultiplier.toFixed(1)}x`;
+                comboEl.parentElement.classList.remove('hidden');
+            } else {
+                comboEl.parentElement.classList.add('hidden');
+            }
+        }
+
+        // Update stats
+        const maxSpeedEl = document.getElementById('max-speed-value');
+        if (maxSpeedEl) maxSpeedEl.textContent = Math.round(this.stats.maxSpeed * 3.6);
+
+        const airTimeEl = document.getElementById('air-time-value');
+        if (airTimeEl) airTimeEl.textContent = this.stats.totalAirTime.toFixed(1);
+
+        const tricksEl = document.getElementById('tricks-value');
+        if (tricksEl) tricksEl.textContent = this.stats.tricksLanded;
 
         // Show trick status
         const trickStatus = document.getElementById('trick-status');
