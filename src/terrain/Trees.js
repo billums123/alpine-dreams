@@ -143,6 +143,8 @@ export class Trees {
 
     createPineTree(scale = 1) {
         const tree = new THREE.Group();
+        tree.userData.isTree = true;
+        tree.userData.knockedDown = false;
 
         // Trunk
         const trunk = new THREE.Mesh(this.trunkGeometry, this.trunkMaterial);
@@ -181,6 +183,8 @@ export class Trees {
 
     createTallPine(scale = 1) {
         const tree = new THREE.Group();
+        tree.userData.isTree = true;
+        tree.userData.knockedDown = false;
 
         // Taller, thinner trunk
         const trunkGeo = new THREE.CylinderGeometry(0.1, 0.2, 2, 5);
@@ -221,6 +225,8 @@ export class Trees {
     createSnowyCone(scale = 1) {
         // Simple heavily snow-covered tree (mostly white)
         const tree = new THREE.Group();
+        tree.userData.isTree = true;
+        tree.userData.knockedDown = false;
 
         // Small trunk
         const trunkGeo = new THREE.CylinderGeometry(0.08, 0.15, 0.8, 5);

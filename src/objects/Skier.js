@@ -23,12 +23,12 @@ export class Skier {
 
         // Physics constants - tuned for fun skiing
         this.gravity = 25; // Gravity for slope acceleration (increased for faster skiing)
-        this.airGravity = 20; // Realistic gravity when airborne (9.8 m/s^2 scaled)
+        this.airGravity = 28; // Stronger gravity for snappier jumps
         this.airFriction = 0.005;
         this.turnSpeed = 2.5; // How fast you can turn
         this.maxSpeed = 50; // Top speed (increased)
         this.brakeForce = 0.92; // Multiplier when braking
-        this.jumpForce = 6; // Slightly stronger jump
+        this.jumpForce = 2.2; // Small realistic hop
 
         // Starting position for reset
         this.startPosition = new THREE.Vector3();
@@ -92,6 +92,10 @@ export class Skier {
         this.airHintCount = 0;
         this.maxAirHints = 3;
 
+        // Limit crash hint display
+        this.crashHintCount = 0;
+        this.maxCrashHints = 3;
+
         // Body part references for animation
         this.bodyParts = {
             torso: null,
@@ -121,6 +125,21 @@ export class Skier {
 
         // Tuck state for speed boost
         this.isTucking = false;
+
+        // Ragdoll state
+        this.isRagdolling = false;
+        this.ragdollTimer = 0;
+        this.ragdollDuration = 999; // Infinite until space pressed
+        this.ragdollVelocity = new THREE.Vector3();
+        this.ragdollAngularVel = new THREE.Vector3();
+        this.detachedSkis = [];
+        this.skiMeshes = []; // References to ski meshes for detaching
+        this.bodyPartVelocities = {}; // Angular velocities for flailing body parts
+
+        // Exploding body parts system
+        this.detachedBodyParts = []; // All detached body parts with physics
+        this.headSnowball = null; // The controllable head/snowball
+        this.headSnowballSize = 1; // Grows as it rolls
 
         // Camera settings
         this.cameraOffset = new THREE.Vector3(0, 4, 10);
@@ -304,33 +323,41 @@ export class Skier {
         this.bodyParts.leftArm = arms.left;
         this.bodyParts.rightArm = arms.right;
 
-        // Skis
-        [-0.15, 0.15].forEach(x => {
+        // Skis - create as groups so they can be detached
+        this.skiMeshes = [];
+        [-0.15, 0.15].forEach((x, index) => {
+            const skiGroup = new THREE.Group();
+            skiGroup.name = index === 0 ? 'leftSki' : 'rightSki';
+            skiGroup.position.set(x, 0, 0);
+
             // Main ski body
             const skiGeometry = new THREE.BoxGeometry(0.1, 0.02, 1.9);
             const ski = new THREE.Mesh(skiGeometry, skiMaterial);
-            ski.position.set(x, 0.015, 0.25);
-            skier.add(ski);
+            ski.position.set(0, 0.015, 0.25);
+            skiGroup.add(ski);
 
             // Ski tip (curved up)
             const tipGeometry = new THREE.BoxGeometry(0.1, 0.02, 0.2);
             const tip = new THREE.Mesh(tipGeometry, skiMaterial);
-            tip.position.set(x, 0.04, 1.15);
+            tip.position.set(0, 0.04, 1.15);
             tip.rotation.x = -0.5;
-            skier.add(tip);
+            skiGroup.add(tip);
 
             // Ski tail (slightly curved up)
             const tailGeometry = new THREE.BoxGeometry(0.1, 0.02, 0.12);
             const tail = new THREE.Mesh(tailGeometry, skiMaterial);
-            tail.position.set(x, 0.03, -0.72);
+            tail.position.set(0, 0.03, -0.72);
             tail.rotation.x = 0.3;
-            skier.add(tail);
+            skiGroup.add(tail);
 
             // Binding
             const bindingGeometry = new THREE.BoxGeometry(0.08, 0.06, 0.18);
             const binding = new THREE.Mesh(bindingGeometry, bootMaterial);
-            binding.position.set(x, 0.05, 0.22);
-            skier.add(binding);
+            binding.position.set(0, 0.05, 0.22);
+            skiGroup.add(binding);
+
+            skier.add(skiGroup);
+            this.skiMeshes.push(skiGroup);
         });
 
         // Poles - as groups that can be animated with arms
@@ -607,6 +634,26 @@ export class Skier {
         window.removeEventListener('keydown', this.onKeyDown);
         window.removeEventListener('keyup', this.onKeyUp);
 
+        // Clean up ragdoll state
+        if (this.isRagdolling) {
+            this.detachedBodyParts.forEach(part => {
+                this.scene.remove(part.mesh);
+            });
+            this.detachedBodyParts = [];
+
+            this.detachedSkis.forEach(ski => {
+                this.scene.remove(ski.mesh);
+            });
+            this.detachedSkis = [];
+
+            if (this.headSnowball) {
+                this.scene.remove(this.headSnowball.mesh);
+                this.headSnowball = null;
+            }
+
+            this.isRagdolling = false;
+        }
+
         // Remove from scene
         if (this.mesh) {
             this.scene.remove(this.mesh);
@@ -666,7 +713,10 @@ export class Skier {
                 this.input.right = true;
                 break;
             case 'Space':
-                if (this.isGrounded && !this.isJumping) {
+                if (this.isRagdolling) {
+                    // Recover immediately from ragdoll
+                    this.recoverFromRagdoll();
+                } else if (this.isGrounded && !this.isJumping) {
                     this.input.jump = true;
                 }
                 break;
@@ -685,6 +735,37 @@ export class Skier {
     }
 
     resetToStart() {
+        // Clean up ragdoll state if active
+        if (this.isRagdolling) {
+            // Remove body parts
+            this.detachedBodyParts.forEach(part => {
+                this.scene.remove(part.mesh);
+            });
+            this.detachedBodyParts = [];
+
+            // Remove skis
+            this.detachedSkis.forEach(ski => {
+                this.scene.remove(ski.mesh);
+            });
+            this.detachedSkis = [];
+
+            // Remove head snowball
+            if (this.headSnowball) {
+                this.scene.remove(this.headSnowball.mesh);
+                this.headSnowball = null;
+            }
+
+            this.isRagdolling = false;
+        }
+
+        // Show skis again
+        this.skiMeshes.forEach(ski => {
+            ski.visible = true;
+        });
+
+        // Show mesh again
+        this.mesh.visible = true;
+
         // Reset to starting position
         const y = this.mountain.getHeightAt(this.startPosition.x, this.startPosition.z);
         this.position.set(this.startPosition.x, y, this.startPosition.z);
@@ -702,7 +783,10 @@ export class Skier {
         this.spinVelocity = 0;
         this.isSpinning = false;
         this.totalSpinDegrees = 0;
+        this.headSnowballSize = 1;
         this.mesh.position.copy(this.position);
+        this.mesh.rotation.set(0, this.rotation, 0);
+        this.resetBodyParts();
     }
 
     startFlip(direction) {
@@ -748,9 +832,10 @@ export class Skier {
             }
 
             if (!cleanLanding && Math.abs(this.flipRotation) > Math.PI * 0.5) {
-                // Crash! Lose most speed
-                this.currentSpeed *= 0.1;
+                // Crash! Trigger ragdoll
                 this.awardTrickPoints(false); // Failed landing
+                this.startRagdoll();
+                return;
             } else if (cleanLanding && numFlips > 0 && !this.isSpinning) {
                 // Clean flip landing (no spin involved) - award points
                 this.awardTrickPoints(true);
@@ -780,9 +865,10 @@ export class Skier {
             }
 
             if (!cleanLanding && spinDegrees > 90) {
-                // Crash on bad spin landing
-                this.currentSpeed *= 0.2;
+                // Crash on bad spin landing - trigger ragdoll
                 this.awardTrickPoints(false); // Failed landing
+                this.startRagdoll();
+                return;
             } else if (spinDegrees >= 180) {
                 this.awardTrickPoints(true); // Clean landing - only award for 180+
             }
@@ -932,6 +1018,15 @@ export class Skier {
         // Clamp delta to prevent physics explosions
         delta = Math.min(delta, 0.05);
 
+        // Handle ragdoll state separately
+        if (this.isRagdolling) {
+            this.updateRagdoll(delta);
+            this.updateCamera(delta);
+            this.updateSnowSpray(delta);
+            this.updateHUD();
+            return;
+        }
+
         // TRACK STATISTICS
         // Max speed
         if (this.currentSpeed > this.stats.maxSpeed) {
@@ -1032,14 +1127,15 @@ export class Skier {
                 const nextTerrainHeight = this.mountain.getHeightAt(nextX, nextZ);
                 const upcomingDrop = terrainHeight - nextTerrainHeight;
 
-                // Timed jump bonus - if jumping right before a drop, get extra height
+                // Timed jump bonus - if jumping right before a drop, small extra pop
                 let jumpBoost = this.jumpForce;
                 if (upcomingDrop > 0.2 && this.currentSpeed > 10) {
-                    // Perfect timing! Add speed-based bonus
-                    jumpBoost += this.currentSpeed * 0.1;
+                    // Perfect timing! Small speed-based bonus
+                    jumpBoost += this.currentSpeed * 0.02;
                 }
 
-                this.verticalVelocity = jumpBoost;
+                // Cap manual jump velocity
+                this.verticalVelocity = Math.min(jumpBoost, 3.5);
                 this.isGrounded = false;
                 this.isJumping = true;
                 this.input.jump = false;
@@ -1124,10 +1220,10 @@ export class Skier {
                 const inflectionStrength = Math.min(Math.abs(slopeChange) * 3, 1.5);
 
                 // Natural launch - converts forward momentum to vertical at inflection
-                this.verticalVelocity = this.currentSpeed * 0.12 * inflectionStrength + 1.5;
+                this.verticalVelocity = this.currentSpeed * 0.08 * inflectionStrength + 1;
 
                 // Cap natural launch velocity
-                this.verticalVelocity = Math.min(this.verticalVelocity, 8);
+                this.verticalVelocity = Math.min(this.verticalVelocity, 5);
 
                 this.isGrounded = false;
                 this.isJumping = true;
@@ -1268,8 +1364,8 @@ export class Skier {
                         timeSinceLastJump > 800) {
 
                         // Launch off the jump - gentler boost based on speed and jump size
-                        const launchPower = Math.min(skierSpeed * 0.15 * jumpScale, 6);
-                        this.verticalVelocity = launchPower + 1.5; // Base launch + speed bonus (max ~7.5)
+                        const launchPower = Math.min(skierSpeed * 0.1 * jumpScale, 4);
+                        this.verticalVelocity = launchPower + 1; // Base launch + speed bonus (max ~5)
                         this.isGrounded = false;
                         this.isJumping = true;
                         this.lastJumpRampTime = now;
@@ -1604,7 +1700,50 @@ export class Skier {
     }
 
     updateCamera(delta) {
-        // Calculate desired camera position behind skier
+        let targetCameraPos;
+        let lookTarget;
+
+        // Special camera for rolling head during ragdoll
+        if (this.isRagdolling && this.headSnowball) {
+            const head = this.headSnowball;
+
+            // Camera follows behind the rolling direction
+            const moveDir = head.velocity.clone();
+            moveDir.y = 0; // Ignore vertical for direction
+            if (moveDir.length() > 0.5) {
+                moveDir.normalize();
+            } else {
+                moveDir.set(0, 0, 1); // Default direction
+            }
+
+            // Position camera behind and above the rolling head
+            const distance = 8 + head.size * 0.8; // Further back
+            const height = 5 + head.size * 0.5; // Higher up
+
+            // Smooth target position - don't follow terrain bumps exactly
+            const smoothedHeadPos = head.mesh.position.clone();
+            const groundHeight = this.mountain.getHeightAt(smoothedHeadPos.x, smoothedHeadPos.z);
+            smoothedHeadPos.y = groundHeight + head.size * 0.3; // Slightly above ground
+
+            targetCameraPos = smoothedHeadPos.clone()
+                .add(moveDir.clone().multiplyScalar(-distance))
+                .add(new THREE.Vector3(0, height, 0));
+
+            // Keep camera above terrain
+            const camTerrainHeight = this.mountain.getHeightAt(targetCameraPos.x, targetCameraPos.z);
+            targetCameraPos.y = Math.max(targetCameraPos.y, camTerrainHeight + 3);
+
+            // Look at the head (smoothed position)
+            lookTarget = smoothedHeadPos.clone();
+            lookTarget.y += head.size * 0.3;
+
+            // Very smooth camera movement
+            this.camera.position.lerp(targetCameraPos, 0.04);
+            this.camera.lookAt(lookTarget);
+            return;
+        }
+
+        // Normal skiing camera
         const backDir = new THREE.Vector3(
             -Math.sin(this.rotation),
             0,
@@ -1612,7 +1751,7 @@ export class Skier {
         );
 
         // Camera behind and above skier
-        let targetCameraPos = this.position.clone()
+        targetCameraPos = this.position.clone()
             .add(backDir.multiplyScalar(this.cameraOffset.z))
             .add(new THREE.Vector3(0, this.cameraOffset.y, 0));
 
@@ -1635,7 +1774,7 @@ export class Skier {
         this.camera.position.lerp(targetCameraPos, smoothness);
 
         // Look at skier (at body height, not feet)
-        const lookTarget = this.position.clone();
+        lookTarget = this.position.clone();
         lookTarget.y += 1.0; // Look at skier's torso
         lookTarget.add(new THREE.Vector3(
             Math.sin(this.rotation) * this.cameraLookAhead,
@@ -1680,6 +1819,20 @@ export class Skier {
         // Show trick status
         const trickStatus = document.getElementById('trick-status');
         if (trickStatus) {
+            // Show crash message during ragdoll
+            if (this.isRagdolling) {
+                if (this.crashHintCount < this.maxCrashHints) {
+                    trickStatus.textContent = 'Space to recover';
+                    trickStatus.style.color = '#f87171';
+                    trickStatus.classList.remove('hidden');
+                } else {
+                    trickStatus.classList.add('hidden');
+                }
+                return;
+            } else {
+                trickStatus.style.color = ''; // Reset color
+            }
+
             if (this.isFlipping && this.isSpinning) {
                 // Combo trick!
                 const flipProgress = Math.abs(this.flipRotation) / (Math.PI * 2) * 100;
@@ -1876,6 +2029,550 @@ export class Skier {
             source.start();
         } catch (e) {
             // Audio not available
+        }
+    }
+
+    // Start ragdoll effect on crash - EXPLODE INTO PIECES!
+    startRagdoll() {
+        if (this.isRagdolling) return;
+
+        this.isRagdolling = true;
+        this.ragdollTimer = this.ragdollDuration;
+
+        const crashIntensity = Math.max(1, this.currentSpeed / 15);
+
+        // Hide the main skier mesh
+        this.mesh.visible = false;
+
+        // Detach skis
+        this.detachSkis();
+
+        // EXPLODE ALL BODY PARTS!
+        this.explodeBodyParts(crashIntensity);
+
+        // Create the controllable head snowball
+        this.createHeadSnowball(crashIntensity);
+
+        // Stop all trick states
+        this.isFlipping = false;
+        this.isSpinning = false;
+        this.flipRotation = 0;
+        this.spinRotation = 0;
+    }
+
+    // Explode all body parts into separate physics objects
+    explodeBodyParts(intensity) {
+        // Clear existing
+        this.detachedBodyParts.forEach(part => {
+            this.scene.remove(part.mesh);
+        });
+        this.detachedBodyParts = [];
+
+        const skinMaterial = new THREE.MeshStandardMaterial({ color: 0xffcc99, roughness: 0.9 });
+        const jacketMaterial = new THREE.MeshStandardMaterial({ color: 0x1565c0, roughness: 0.7 });
+        const pantsMaterial = new THREE.MeshStandardMaterial({ color: 0x212121, roughness: 0.8 });
+        const bootMaterial = new THREE.MeshStandardMaterial({ color: 0x37474f, roughness: 0.5 });
+        const poleMaterial = new THREE.MeshStandardMaterial({ color: 0x263238, roughness: 0.3, metalness: 0.7 });
+        const gloveMaterial = new THREE.MeshStandardMaterial({ color: 0x1a1a1a, roughness: 0.8 });
+
+        // Define body parts to explode
+        const parts = [
+            // Torso
+            { geo: new THREE.CapsuleGeometry(0.22, 0.45, 8, 12), mat: jacketMaterial, offset: [0, 1.05, 0], mass: 3 },
+            // Arms
+            { geo: new THREE.CapsuleGeometry(0.055, 0.2, 6, 8), mat: jacketMaterial, offset: [-0.24, 0.95, 0.05], mass: 0.5 },
+            { geo: new THREE.CapsuleGeometry(0.055, 0.2, 6, 8), mat: jacketMaterial, offset: [0.24, 0.95, 0.05], mass: 0.5 },
+            { geo: new THREE.CapsuleGeometry(0.045, 0.18, 6, 8), mat: jacketMaterial, offset: [-0.32, 0.72, 0.22], mass: 0.4 },
+            { geo: new THREE.CapsuleGeometry(0.045, 0.18, 6, 8), mat: jacketMaterial, offset: [0.32, 0.72, 0.22], mass: 0.4 },
+            // Gloves
+            { geo: new THREE.SphereGeometry(0.05, 8, 6), mat: gloveMaterial, offset: [-0.28, 0.58, 0.42], mass: 0.2 },
+            { geo: new THREE.SphereGeometry(0.05, 8, 6), mat: gloveMaterial, offset: [0.28, 0.58, 0.42], mass: 0.2 },
+            // Legs
+            { geo: new THREE.CapsuleGeometry(0.09, 0.25, 6, 8), mat: pantsMaterial, offset: [-0.12, 0.62, 0.08], mass: 1 },
+            { geo: new THREE.CapsuleGeometry(0.09, 0.25, 6, 8), mat: pantsMaterial, offset: [0.12, 0.62, 0.08], mass: 1 },
+            { geo: new THREE.CapsuleGeometry(0.07, 0.22, 6, 8), mat: pantsMaterial, offset: [-0.14, 0.32, 0.18], mass: 0.8 },
+            { geo: new THREE.CapsuleGeometry(0.07, 0.22, 6, 8), mat: pantsMaterial, offset: [0.14, 0.32, 0.18], mass: 0.8 },
+            // Boots
+            { geo: new THREE.BoxGeometry(0.12, 0.14, 0.28), mat: bootMaterial, offset: [-0.15, 0.1, 0.22], mass: 0.6 },
+            { geo: new THREE.BoxGeometry(0.12, 0.14, 0.28), mat: bootMaterial, offset: [0.15, 0.1, 0.22], mass: 0.6 },
+            // Poles
+            { geo: new THREE.CylinderGeometry(0.012, 0.01, 1.1, 8), mat: poleMaterial, offset: [-0.28, 0.2, 0.1], mass: 0.3 },
+            { geo: new THREE.CylinderGeometry(0.012, 0.01, 1.1, 8), mat: poleMaterial, offset: [0.28, 0.2, 0.1], mass: 0.3 },
+        ];
+
+        parts.forEach(partDef => {
+            const mesh = new THREE.Mesh(partDef.geo, partDef.mat);
+
+            // World position based on skier position + offset
+            const worldPos = this.position.clone();
+            worldPos.x += partDef.offset[0];
+            worldPos.y += partDef.offset[1];
+            worldPos.z += partDef.offset[2];
+            mesh.position.copy(worldPos);
+
+            // Random explosion velocity
+            const explosionForce = 8 + Math.random() * 12 * intensity;
+            const velocity = new THREE.Vector3(
+                this.velocity.x * 0.5 + (Math.random() - 0.5) * explosionForce,
+                3 + Math.random() * 8 * intensity,
+                this.velocity.z * 0.5 + (Math.random() - 0.5) * explosionForce
+            );
+
+            // Lighter parts fly faster
+            velocity.multiplyScalar(1 / Math.sqrt(partDef.mass));
+
+            // Random crazy spin
+            const angularVel = new THREE.Vector3(
+                (Math.random() - 0.5) * 20,
+                (Math.random() - 0.5) * 20,
+                (Math.random() - 0.5) * 20
+            );
+
+            mesh.castShadow = true;
+            this.scene.add(mesh);
+
+            this.detachedBodyParts.push({
+                mesh,
+                velocity,
+                angularVel,
+                mass: partDef.mass
+            });
+        });
+    }
+
+    // Create the controllable head that becomes a snowball
+    createHeadSnowball(intensity) {
+        // Remove old snowball if exists
+        if (this.headSnowball) {
+            this.scene.remove(this.headSnowball.mesh);
+        }
+
+        // Create head with helmet and goggles
+        const headGroup = new THREE.Group();
+
+        const skinMaterial = new THREE.MeshStandardMaterial({ color: 0xffcc99, roughness: 0.9 });
+        const helmetMaterial = new THREE.MeshStandardMaterial({ color: 0xd32f2f, roughness: 0.4 });
+        const gogglesMaterial = new THREE.MeshStandardMaterial({ color: 0x1a1a1a, roughness: 0.1, metalness: 0.8 });
+        const snowMaterial = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.8 });
+
+        // Head
+        const headGeo = new THREE.SphereGeometry(0.16, 12, 10);
+        const head = new THREE.Mesh(headGeo, skinMaterial);
+        headGroup.add(head);
+
+        // Helmet
+        const helmetGeo = new THREE.SphereGeometry(0.19, 12, 10, 0, Math.PI * 2, 0, Math.PI * 0.6);
+        const helmet = new THREE.Mesh(helmetGeo, helmetMaterial);
+        helmet.position.y = 0.04;
+        helmet.rotation.x = -0.1;
+        headGroup.add(helmet);
+
+        // Goggles
+        const gogglesGeo = new THREE.BoxGeometry(0.28, 0.08, 0.06);
+        const goggles = new THREE.Mesh(gogglesGeo, gogglesMaterial);
+        goggles.position.z = 0.14;
+        headGroup.add(goggles);
+
+        // Snow coating (will grow)
+        const snowGeo = new THREE.SphereGeometry(0.2, 16, 12);
+        const snowCoating = new THREE.Mesh(snowGeo, snowMaterial);
+        snowCoating.scale.set(1, 1, 1);
+        snowCoating.visible = false; // Starts invisible
+        headGroup.add(snowCoating);
+
+        // Position at head location
+        headGroup.position.copy(this.position);
+        headGroup.position.y += 1.52;
+
+        this.scene.add(headGroup);
+
+        // Initial velocity - head pops off but doesn't fly too high
+        const velocity = new THREE.Vector3(
+            this.velocity.x * 0.6 + (Math.random() - 0.5) * 4,
+            2 + Math.random() * 2 * intensity, // Lower initial pop
+            this.velocity.z * 0.6 + (Math.random() - 0.5) * 4
+        );
+
+        this.headSnowball = {
+            mesh: headGroup,
+            velocity,
+            angularVel: new THREE.Vector3(0, 0, 0),
+            snowCoating,
+            size: 1,
+            distanceRolled: 0
+        };
+
+        this.headSnowballSize = 1;
+    }
+
+    // Detach skis from skier and give them physics
+    detachSkis() {
+        // Clear any existing detached skis
+        this.detachedSkis.forEach(ski => {
+            this.scene.remove(ski.mesh);
+        });
+        this.detachedSkis = [];
+
+        // Hide skis on the skier model
+        this.skiMeshes.forEach(ski => {
+            ski.visible = false;
+        });
+
+        // Create detached ski objects
+        const skiMaterial = new THREE.MeshStandardMaterial({
+            color: 0xf4511e,
+            roughness: 0.3,
+            metalness: 0.4
+        });
+
+        [-1, 1].forEach((side, index) => {
+            const skiGroup = new THREE.Group();
+
+            // Main ski body
+            const skiGeometry = new THREE.BoxGeometry(0.1, 0.02, 1.9);
+            const ski = new THREE.Mesh(skiGeometry, skiMaterial);
+            ski.position.set(0, 0, 0.25);
+            skiGroup.add(ski);
+
+            // Ski tip
+            const tipGeometry = new THREE.BoxGeometry(0.1, 0.02, 0.2);
+            const tip = new THREE.Mesh(tipGeometry, skiMaterial);
+            tip.position.set(0, 0.025, 1.15);
+            tip.rotation.x = -0.5;
+            skiGroup.add(tip);
+
+            // Ski tail
+            const tailGeometry = new THREE.BoxGeometry(0.1, 0.02, 0.12);
+            const tail = new THREE.Mesh(tailGeometry, skiMaterial);
+            tail.position.set(0, 0.015, -0.72);
+            tail.rotation.x = 0.3;
+            skiGroup.add(tail);
+
+            // Position at skier's feet
+            const worldPos = this.position.clone();
+            worldPos.x += side * 0.15;
+            worldPos.y += 0.1;
+            skiGroup.position.copy(worldPos);
+            skiGroup.rotation.y = this.rotation;
+
+            // Skis fly off dramatically based on crash speed
+            const crashIntensity = Math.max(1, this.currentSpeed / 15);
+            const velocity = new THREE.Vector3(
+                this.velocity.x * 0.5 + side * (5 + Math.random() * 8) * crashIntensity,
+                4 + Math.random() * 8 * crashIntensity,
+                this.velocity.z * 0.5 + (Math.random() - 0.5) * 8 * crashIntensity
+            );
+
+            // Crazy spinning skis
+            const angularVel = new THREE.Vector3(
+                (Math.random() - 0.5) * 20 * crashIntensity,
+                (Math.random() - 0.5) * 15 * crashIntensity,
+                (Math.random() - 0.5) * 20 * crashIntensity
+            );
+
+            this.scene.add(skiGroup);
+            this.detachedSkis.push({
+                mesh: skiGroup,
+                velocity: velocity,
+                angularVel: angularVel
+            });
+        });
+    }
+
+    // Update ragdoll physics - now with exploding parts and controllable head!
+    updateRagdoll(delta) {
+        if (!this.isRagdolling) return;
+
+        const gravity = 20;
+
+        // Update all detached body parts
+        this.detachedBodyParts.forEach(part => {
+            part.velocity.y -= gravity * delta;
+
+            part.mesh.position.x += part.velocity.x * delta;
+            part.mesh.position.y += part.velocity.y * delta;
+            part.mesh.position.z += part.velocity.z * delta;
+
+            // Ground collision
+            const terrainHeight = this.mountain.getHeightAt(part.mesh.position.x, part.mesh.position.z);
+            const partRadius = 0.2;
+            if (part.mesh.position.y < terrainHeight + partRadius) {
+                part.mesh.position.y = terrainHeight + partRadius;
+                part.velocity.y = Math.abs(part.velocity.y) * 0.4;
+                part.velocity.x *= 0.85;
+                part.velocity.z *= 0.85;
+
+                // Add spin on bounce
+                part.angularVel.x += part.velocity.z * 0.5;
+                part.angularVel.z -= part.velocity.x * 0.5;
+            }
+
+            // Apply spin
+            part.mesh.rotation.x += part.angularVel.x * delta;
+            part.mesh.rotation.y += part.angularVel.y * delta;
+            part.mesh.rotation.z += part.angularVel.z * delta;
+
+            part.angularVel.multiplyScalar(0.98);
+        });
+
+        // Update detached skis
+        this.detachedSkis.forEach(ski => {
+            ski.velocity.y -= gravity * delta;
+
+            ski.mesh.position.x += ski.velocity.x * delta;
+            ski.mesh.position.y += ski.velocity.y * delta;
+            ski.mesh.position.z += ski.velocity.z * delta;
+
+            const skiTerrainHeight = this.mountain.getHeightAt(ski.mesh.position.x, ski.mesh.position.z);
+            if (ski.mesh.position.y < skiTerrainHeight + 0.05) {
+                ski.mesh.position.y = skiTerrainHeight + 0.05;
+                ski.velocity.y = Math.abs(ski.velocity.y) * 0.3;
+                ski.velocity.x *= 0.85;
+                ski.velocity.z *= 0.85;
+            }
+
+            ski.mesh.rotation.x += ski.angularVel.x * delta;
+            ski.mesh.rotation.y += ski.angularVel.y * delta;
+            ski.mesh.rotation.z += ski.angularVel.z * delta;
+            ski.angularVel.multiplyScalar(0.98);
+        });
+
+        // UPDATE THE CONTROLLABLE HEAD SNOWBALL!
+        if (this.headSnowball) {
+            const head = this.headSnowball;
+
+            // Ground collision - head rolls!
+            const terrainHeight = this.mountain.getHeightAt(head.mesh.position.x, head.mesh.position.z);
+            const headRadius = 0.2 * head.size;
+            const isOnGround = head.mesh.position.y <= terrainHeight + headRadius + 0.1;
+
+            // Get slope direction for natural rolling
+            const normal = this.mountain.getNormalAt(head.mesh.position.x, head.mesh.position.z);
+            const slopeDir = new THREE.Vector3(normal.x, 0, normal.z);
+
+            // Player can steer the head with A/D - much stronger control
+            // Steer perpendicular to movement direction
+            const steerForce = isOnGround ? 25 : 5;
+            const moveAngle = Math.atan2(head.velocity.x, head.velocity.z);
+            if (this.input.left) {
+                // Steer left (perpendicular to movement)
+                head.velocity.x += Math.cos(moveAngle) * steerForce * delta;
+                head.velocity.z -= Math.sin(moveAngle) * steerForce * delta;
+            }
+            if (this.input.right) {
+                // Steer right (perpendicular to movement)
+                head.velocity.x -= Math.cos(moveAngle) * steerForce * delta;
+                head.velocity.z += Math.sin(moveAngle) * steerForce * delta;
+            }
+
+            // Gravity
+            head.velocity.y -= gravity * delta;
+
+            // STRONG downhill force when on ground - naturally rolls down
+            if (isOnGround) {
+                const downhillForce = 35; // Strong gravity pull downhill
+                head.velocity.x += normal.x * downhillForce * delta;
+                head.velocity.z += normal.z * downhillForce * delta;
+            }
+
+            // Move head
+            head.mesh.position.x += head.velocity.x * delta;
+            head.mesh.position.y += head.velocity.y * delta;
+            head.mesh.position.z += head.velocity.z * delta;
+
+            if (head.mesh.position.y < terrainHeight + headRadius) {
+                head.mesh.position.y = terrainHeight + headRadius;
+
+                // No bounce - just roll
+                head.velocity.y = 0;
+
+                // Very light rolling friction so it keeps going
+                head.velocity.x *= 0.995;
+                head.velocity.z *= 0.995;
+
+                // Calculate rolling angular velocity from movement
+                const speed = Math.sqrt(head.velocity.x * head.velocity.x + head.velocity.z * head.velocity.z);
+                head.angularVel.x = head.velocity.z / headRadius * 0.8;
+                head.angularVel.z = -head.velocity.x / headRadius * 0.8;
+
+                // SNOWBALL GROWS as it rolls on ground!
+                head.distanceRolled += speed * delta;
+                const growthRate = 0.12; // How fast it grows
+                const newSize = 1 + head.distanceRolled * growthRate;
+
+                if (newSize > head.size) {
+                    head.size = Math.min(newSize, 8); // Cap at 8x size
+                    head.mesh.scale.setScalar(head.size);
+
+                    // Show snow coating once it starts growing
+                    if (head.size > 1.2 && head.snowCoating) {
+                        head.snowCoating.visible = true;
+                        head.snowCoating.scale.setScalar(head.size * 0.9);
+                    }
+                }
+            }
+
+            // Apply rolling rotation
+            head.mesh.rotation.x += head.angularVel.x * delta;
+            head.mesh.rotation.z += head.angularVel.z * delta;
+
+            // Check for tree collisions - big snowball knocks them down!
+            if (head.size >= 2) {
+                this.checkSnowballTreeCollision(head);
+            }
+
+            // Update position reference for camera (smooth it)
+            this.position.lerp(head.mesh.position, 0.3);
+        }
+    }
+
+    // Check if snowball hits trees and knock them down
+    checkSnowballTreeCollision(head) {
+        const snowballRadius = head.size * 0.5;
+        const snowballPos = head.mesh.position;
+
+        // Find trees in scene
+        this.scene.traverse(obj => {
+            if (obj.userData && obj.userData.isTree && !obj.userData.knockedDown) {
+                const treePos = obj.position;
+                const dx = snowballPos.x - treePos.x;
+                const dz = snowballPos.z - treePos.z;
+                const distance = Math.sqrt(dx * dx + dz * dz);
+
+                // Collision check
+                const treeRadius = 0.5;
+                if (distance < snowballRadius + treeRadius) {
+                    // KNOCK DOWN THE TREE!
+                    this.knockDownTree(obj, head);
+                }
+            }
+        });
+    }
+
+    // Animate tree falling over
+    knockDownTree(tree, head) {
+        tree.userData.knockedDown = true;
+
+        // Calculate fall direction (same direction snowball is moving)
+        const fallDir = new THREE.Vector3(
+            head.velocity.x,
+            0,
+            head.velocity.z
+        );
+
+        if (fallDir.length() > 0.1) {
+            fallDir.normalize();
+        } else {
+            fallDir.set(0, 0, 1); // Default direction if not moving
+        }
+
+        // Store original position for animation
+        const originalY = tree.position.y;
+        tree.userData.fallAngle = 0;
+        tree.userData.fallSpeed = 3 + Math.random() * 2;
+
+        // The rotation axis is PERPENDICULAR to the fall direction
+        // If falling in direction (dx, 0, dz), rotate around axis (-dz, 0, dx)
+        const rotationAxis = new THREE.Vector3(-fallDir.z, 0, fallDir.x);
+
+        // Animate the fall
+        const animateFall = () => {
+            if (tree.userData.fallAngle < Math.PI / 2) {
+                tree.userData.fallAngle += tree.userData.fallSpeed * 0.016;
+
+                // Use setRotationFromAxisAngle for correct rotation
+                tree.setRotationFromAxisAngle(rotationAxis, tree.userData.fallAngle);
+
+                // Sink into ground as it falls
+                tree.position.y = originalY - tree.userData.fallAngle * 0.5;
+
+                requestAnimationFrame(animateFall);
+            }
+        };
+
+        animateFall();
+
+        // Add some speed boost to snowball for satisfying impact
+        const impactBoost = 2;
+        head.velocity.x += fallDir.x * impactBoost;
+        head.velocity.z += fallDir.z * impactBoost;
+    }
+
+    // Recover from ragdoll and get back up
+    recoverFromRagdoll() {
+        this.isRagdolling = false;
+        this.crashHintCount++;
+
+        // Remove detached body parts
+        this.detachedBodyParts.forEach(part => {
+            this.scene.remove(part.mesh);
+        });
+        this.detachedBodyParts = [];
+
+        // Remove detached skis
+        this.detachedSkis.forEach(ski => {
+            this.scene.remove(ski.mesh);
+        });
+        this.detachedSkis = [];
+
+        // Remove head snowball
+        if (this.headSnowball) {
+            // Use snowball position as respawn point
+            this.position.copy(this.headSnowball.mesh.position);
+            this.scene.remove(this.headSnowball.mesh);
+            this.headSnowball = null;
+        }
+
+        // Show skis on skier again
+        this.skiMeshes.forEach(ski => {
+            ski.visible = true;
+        });
+
+        // Show the main skier mesh again
+        this.mesh.visible = true;
+
+        // Get proper terrain height
+        const terrainHeight = this.mountain.getHeightAt(this.position.x, this.position.z);
+        this.position.y = terrainHeight;
+
+        // Reset rotation to face downhill
+        const normal = this.mountain.getNormalAt(this.position.x, this.position.z);
+        this.rotation = Math.atan2(normal.x, normal.z);
+
+        // Reset mesh rotation and position
+        this.mesh.rotation.set(0, this.rotation, 0);
+        this.mesh.position.copy(this.position);
+
+        // Reset physics
+        this.velocity.set(0, 0, 0);
+        this.verticalVelocity = 0;
+        this.currentSpeed = 0;
+        this.isGrounded = true;
+        this.isJumping = false;
+        this.edgeAngle = 0;
+
+        // Reset body part positions
+        this.resetBodyParts();
+
+        // Reset snowball size for next crash
+        this.headSnowballSize = 1;
+    }
+
+    // Reset body parts to default positions
+    resetBodyParts() {
+        if (this.bodyParts.torso) {
+            this.bodyParts.torso.rotation.set(0.25, 0, 0);
+            this.bodyParts.torso.position.set(0, 1.05, 0);
+        }
+        if (this.bodyParts.head) {
+            this.bodyParts.head.position.set(0, 1.52, 0.05);
+            this.bodyParts.head.rotation.set(0, 0, 0);
+        }
+        if (this.bodyParts.helmet) {
+            this.bodyParts.helmet.position.set(0, 1.56, 0.02);
+        }
+        if (this.bodyParts.goggles) {
+            this.bodyParts.goggles.position.set(0, 1.52, 0.16);
         }
     }
 }
