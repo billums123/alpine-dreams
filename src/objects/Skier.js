@@ -88,6 +88,10 @@ export class Skier {
             startTime: 0
         };
 
+        // Limit air hint display to first few jumps
+        this.airHintCount = 0;
+        this.maxAirHints = 3;
+
         // Body part references for animation
         this.bodyParts = {
             torso: null,
@@ -941,6 +945,8 @@ export class Skier {
             // Just landed - add to total and reset
             this.stats.totalAirTime += this.stats.currentAirTime;
             this.stats.currentAirTime = 0;
+            // Increment air hint counter (limit how many times hint shows)
+            this.airHintCount++;
         }
 
         // Get terrain data at current position
@@ -1333,10 +1339,17 @@ export class Skier {
             this.mesh.quaternion.multiply(leanQuat);
         }
 
-        // Apply flip rotation when airborne
+        // Apply flip rotation when airborne - use world-space horizontal axis
         if (this.isFlipping && !this.isGrounded) {
+            // Calculate a pure horizontal right vector based on skier's facing direction
+            // This ensures flips are straight forward/back, not at an angle
+            const flipAxis = new THREE.Vector3(
+                Math.cos(this.rotation),  // perpendicular to facing direction
+                0,
+                -Math.sin(this.rotation)
+            );
             const flipQuat = new THREE.Quaternion();
-            flipQuat.setFromAxisAngle(right, this.flipRotation);
+            flipQuat.setFromAxisAngle(flipAxis, this.flipRotation);
             this.mesh.quaternion.multiply(flipQuat);
         }
 
@@ -1684,9 +1697,12 @@ export class Skier {
                 const spinName = spinDegrees >= 180 ? `${spinDegrees}°` : 'SPINNING...';
                 trickStatus.textContent = spinName;
                 trickStatus.classList.remove('hidden');
-            } else if (!this.isGrounded) {
+            } else if (!this.isGrounded && this.airHintCount < this.maxAirHints) {
                 trickStatus.textContent = 'AIR! (A/D=spin, W/S=flip)';
                 trickStatus.classList.remove('hidden');
+            } else if (!this.isGrounded) {
+                // Hide hint after shown enough times
+                trickStatus.classList.add('hidden');
             } else {
                 trickStatus.classList.add('hidden');
             }

@@ -88,6 +88,16 @@ class AlpineDreams {
             this.music = new Music();
             this.music.init();
 
+            // Music toggle button
+            const musicBtn = document.getElementById('btn-toggle-music');
+            if (musicBtn) {
+                musicBtn.addEventListener('click', () => {
+                    const muted = this.music.toggleMute();
+                    musicBtn.textContent = muted ? '🔇' : '🔊';
+                    musicBtn.title = muted ? 'Unmute Music' : 'Mute Music';
+                });
+            }
+
             // Start render loop
             this.sceneManager.onUpdate = (delta) => this.update(delta);
             this.sceneManager.start();
