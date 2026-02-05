@@ -27,6 +27,32 @@ export class Mountain {
 
         // Noise seed for reproducibility
         this.seed = Math.random() * 1000;
+
+        // Randomized peak parameters (generated from seed)
+        this.peaks = this.generateRandomPeaks();
+    }
+
+    // Generate random peak positions and heights
+    generateRandomPeaks() {
+        const peaks = [];
+        const numPeaks = 5 + Math.floor(this.seededRandom() * 4); // 5-8 peaks
+
+        for (let i = 0; i < numPeaks; i++) {
+            peaks.push({
+                x: (this.seededRandom() - 0.5) * 60,
+                z: -10 - this.seededRandom() * 40, // Mostly in back half
+                height: 15 + this.seededRandom() * 25,
+                radius: 18 + this.seededRandom() * 20
+            });
+        }
+
+        return peaks;
+    }
+
+    // Seeded random number generator
+    seededRandom() {
+        this.seed = (this.seed * 9301 + 49297) % 233280;
+        return this.seed / 233280;
     }
 
     generate() {
@@ -95,22 +121,22 @@ export class Mountain {
         // Bias toward back of terrain (mountains in back, valley in front)
         const backBias = this.smoothstep(40, -30, z);
 
-        // Main terrain shape using smooth noise
-        const baseNoise = this.fbmNoise(x * 0.015, z * 0.015, 4, 0.5, 2.0);
-        height += baseNoise * 25 * edgeFalloff;
+        // Main terrain shape using smooth noise (with seed offset for variation)
+        const noiseScale = 0.012 + (this.seed % 100) / 10000; // Slight variation in scale
+        const baseNoise = this.fbmNoise(x * noiseScale + this.seed, z * noiseScale, 4, 0.5, 2.0);
+        height += baseNoise * 28 * edgeFalloff;
 
-        // Large rounded peaks
-        const peak1 = this.gaussianPeak(x, z, 0, -25, 35, 30);
-        const peak2 = this.gaussianPeak(x, z, -25, -15, 28, 25);
-        const peak3 = this.gaussianPeak(x, z, 25, -20, 25, 28);
-        const peak4 = this.gaussianPeak(x, z, -15, -35, 20, 22);
-        const peak5 = this.gaussianPeak(x, z, 15, -38, 18, 20);
+        // Large rounded peaks (randomized)
+        let peakHeight = 0;
+        for (const peak of this.peaks) {
+            peakHeight += this.gaussianPeak(x, z, peak.x, peak.z, peak.height, peak.radius);
+        }
+        height += peakHeight * backBias;
 
-        height += (peak1 + peak2 + peak3 + peak4 + peak5) * backBias;
-
-        // Gentle rolling hills using low-frequency noise
-        const hills = this.fbmNoise(x * 0.03 + 100, z * 0.03 + 100, 2, 0.5, 2.0);
-        height += hills * 8 * edgeFalloff * (1 - backBias * 0.5);
+        // Gentle rolling hills using low-frequency noise (with seed variation)
+        const hillScale = 0.025 + (this.seed % 50) / 5000;
+        const hills = this.fbmNoise(x * hillScale + this.seed * 0.1, z * hillScale + 100, 2, 0.5, 2.0);
+        height += hills * 10 * edgeFalloff * (1 - backBias * 0.5);
 
         // Valley floor in front
         const valleyFloor = this.smoothstep(15, 35, z);
@@ -438,6 +464,9 @@ export class Mountain {
         } else {
             this.seed = Math.random() * 1000;
         }
+
+        // Regenerate random peaks with new seed
+        this.peaks = this.generateRandomPeaks();
 
         this.generateHeightMap();
         this.applyHeightMap();

@@ -397,11 +397,22 @@ export class ObjectPlacer {
             }
         }
 
-        // Rotate preview/selected object
+        // Rotate preview/selected object with R or arrow keys
         if (event.key === 'r' || event.key === 'R') {
             const target = this.previewObject || (this.selectedObject && this.selectedObject.object);
             if (target) {
                 target.rotation.y += Math.PI / 4; // 45 degree rotation
+            }
+        }
+
+        // Arrow keys for finer rotation control when placing
+        if (this.previewObject) {
+            if (event.key === 'ArrowLeft') {
+                this.previewObject.rotation.y += Math.PI / 12; // 15 degree rotation
+                event.preventDefault();
+            } else if (event.key === 'ArrowRight') {
+                this.previewObject.rotation.y -= Math.PI / 12; // 15 degree rotation
+                event.preventDefault();
             }
         }
 

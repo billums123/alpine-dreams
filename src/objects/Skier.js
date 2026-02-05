@@ -33,6 +33,10 @@ export class Skier {
         this.startPosition = new THREE.Vector3();
         this.startRotation = 0;
 
+        // Collision detection
+        this.collisionRaycaster = new THREE.Raycaster();
+        this.lastJumpRampTime = 0;
+
         // State
         this.isGrounded = true;
         this.isJumping = false;
@@ -685,6 +689,9 @@ export class Skier {
         this.position.x = THREE.MathUtils.clamp(this.position.x, -halfWidth, halfWidth);
         this.position.z = THREE.MathUtils.clamp(this.position.z, -halfDepth, halfDepth);
 
+        // Check collisions with objects
+        this.checkCollisions(delta);
+
         // Update mesh position
         this.mesh.position.copy(this.position);
 
@@ -715,6 +722,71 @@ export class Skier {
 
         // Update HUD
         this.updateHUD();
+    }
+
+    // Check collisions with placed objects
+    checkCollisions(delta) {
+        // Get all placed objects in the scene
+        const collidableObjects = [];
+        this.scene.traverse(obj => {
+            if (obj.userData && obj.userData.placedObject && obj !== this.mesh) {
+                collidableObjects.push(obj);
+            }
+        });
+
+        if (collidableObjects.length === 0) return;
+
+        // Check distance to each object
+        const skierPos = this.position.clone();
+        skierPos.y += 0.5; // Check at waist height
+
+        for (const obj of collidableObjects) {
+            const objPos = obj.position.clone();
+            const distance = skierPos.distanceTo(objPos);
+
+            // Check if this is a jump ramp
+            if (obj.userData.isJump && distance < 4) {
+                // Check if we're moving toward the jump and on the ramp
+                const toJump = objPos.clone().sub(skierPos).normalize();
+                const forward = new THREE.Vector3(Math.sin(this.rotation), 0, Math.cos(this.rotation));
+                const alignment = forward.dot(toJump);
+
+                // If moving toward jump and close enough, launch!
+                const now = performance.now();
+                if (alignment > 0.3 && distance < 2.5 && this.isGrounded &&
+                    now - this.lastJumpRampTime > 1000) {
+                    // Launch off the jump - boost based on speed
+                    const launchPower = Math.min(this.currentSpeed * 0.4, 12);
+                    this.verticalVelocity = launchPower;
+                    this.isGrounded = false;
+                    this.isJumping = true;
+                    this.lastJumpRampTime = now;
+                }
+                continue; // Don't collide with jumps
+            }
+
+            // Collision with other objects (trees, lodges, etc.)
+            const collisionRadius = this.getCollisionRadius(obj);
+            if (distance < collisionRadius + 0.5) {
+                // Collision! Stop the skier and bounce back slightly
+                const pushDir = skierPos.clone().sub(objPos).normalize();
+                this.position.x += pushDir.x * 0.5;
+                this.position.z += pushDir.z * 0.5;
+                this.currentSpeed *= 0.3; // Lose most speed on collision
+                this.velocity.multiplyScalar(0.3);
+            }
+        }
+    }
+
+    // Get collision radius for different object types
+    getCollisionRadius(obj) {
+        const name = obj.name || '';
+        if (name.includes('lodge') || name.includes('Lodge')) return 3;
+        if (name.includes('Tree') || name.includes('tree')) return 0.5;
+        if (name.includes('snowman')) return 0.6;
+        if (name.includes('flag')) return 0.2;
+        if (name.includes('lift') || name.includes('Lift')) return 1;
+        return 1; // Default radius
     }
 
     // Properly align skier mesh to terrain surface
