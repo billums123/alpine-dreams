@@ -74,7 +74,11 @@ export class Trees {
             const height = this.mountain.getHeightAt(x, z);
 
             // Don't place trees too high (above tree line) or too low
-            if (height < 2 || height > 25) continue;
+            if (height < 2 || height > 28) continue;
+
+            // Don't place on steep slopes
+            const slope = this.mountain.getSlopeAt ? this.mountain.getSlopeAt(x, z) : 0;
+            if (slope > 0.5) continue;
 
             // Random tree variant
             const variant = Math.random();

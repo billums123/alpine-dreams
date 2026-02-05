@@ -1,5 +1,5 @@
 /**
- * Mountain - Procedural low-poly snowy mountain terrain
+ * Mountain - Smooth procedural mountain terrain with interactive sculpting
  */
 
 import * as THREE from 'three';
@@ -11,16 +11,29 @@ export class Mountain {
         this.geometry = null;
 
         // Terrain parameters
-        this.width = 100;
-        this.depth = 100;
-        this.segments = 50;
-        this.maxHeight = 35;
+        this.width = 120;
+        this.depth = 120;
+        this.segments = 80; // Higher resolution for smoother terrain
+        this.maxHeight = 40;
 
-        // Store height data for collision/placement
-        this.heightData = [];
+        // Height map for fast lookups
+        this.heightMap = null;
+        this.heightMapSize = this.segments + 1;
+
+        // Sculpting state
+        this.sculptMode = null; // 'raise', 'lower', 'smooth', 'flatten'
+        this.sculptRadius = 8;
+        this.sculptStrength = 0.5;
+
+        // Noise seed for reproducibility
+        this.seed = Math.random() * 1000;
     }
 
     generate() {
+        // Initialize height map
+        this.heightMap = new Float32Array(this.heightMapSize * this.heightMapSize);
+        this.generateHeightMap();
+
         // Create terrain geometry
         this.geometry = new THREE.PlaneGeometry(
             this.width,
@@ -32,37 +45,19 @@ export class Mountain {
         // Rotate to horizontal
         this.geometry.rotateX(-Math.PI / 2);
 
-        // Generate heightmap
-        const positions = this.geometry.attributes.position.array;
-        this.heightData = [];
-
-        for (let i = 0; i < positions.length; i += 3) {
-            const x = positions[i];
-            const z = positions[i + 2];
-
-            // Generate height using multiple noise octaves
-            let height = this.generateHeight(x, z);
-
-            // Store in height data
-            this.heightData.push({
-                x: positions[i],
-                z: positions[i + 2],
-                y: height
-            });
-
-            positions[i + 1] = height;
-        }
+        // Apply height map to geometry
+        this.applyHeightMap();
 
         // Recompute normals for lighting
         this.geometry.computeVertexNormals();
 
-        // Create material with vertex colors for snow/rock variation
+        // Create material with vertex colors
         this.applyVertexColors();
 
         const material = new THREE.MeshStandardMaterial({
             vertexColors: true,
-            flatShading: true, // Low-poly look
-            roughness: 0.9,
+            flatShading: false, // Smooth shading for natural look
+            roughness: 0.85,
             metalness: 0.0
         });
 
@@ -72,56 +67,182 @@ export class Mountain {
         this.mesh.name = 'terrain';
 
         this.scene.add(this.mesh);
-
-        // Add ski slopes (groomed paths)
-        this.addSkiSlopes();
     }
 
-    generateHeight(x, z) {
-        // Multi-octave noise for natural terrain
-        let height = 0;
+    generateHeightMap() {
+        // Generate smooth terrain using layered noise
+        for (let z = 0; z < this.heightMapSize; z++) {
+            for (let x = 0; x < this.heightMapSize; x++) {
+                const worldX = (x / this.segments - 0.5) * this.width;
+                const worldZ = (z / this.segments - 0.5) * this.depth;
 
-        // Main mountain shape - higher toward the back
-        const distFromCenter = Math.sqrt(x * x + z * z);
-        const falloff = Math.max(0, 1 - distFromCenter / 60);
-
-        // Push height up toward back (negative z)
-        const backBias = Math.max(0, (-z + 30) / 60);
-
-        // Simplex-like noise (approximation using sin)
-        const noise1 = this.noise(x * 0.05, z * 0.05) * 15;
-        const noise2 = this.noise(x * 0.1, z * 0.1) * 7;
-        const noise3 = this.noise(x * 0.2, z * 0.2) * 3;
-
-        height = (noise1 + noise2 + noise3) * falloff;
-
-        // Add central peak
-        const peakFalloff = Math.exp(-((x - 5) * (x - 5) + (z + 20) * (z + 20)) / 400);
-        height += peakFalloff * this.maxHeight * backBias;
-
-        // Secondary peaks
-        const peak2 = Math.exp(-((x + 25) * (x + 25) + (z + 10) * (z + 10)) / 300);
-        height += peak2 * 20;
-
-        const peak3 = Math.exp(-((x - 30) * (x - 30) + (z + 5) * (z + 5)) / 350);
-        height += peak3 * 18;
-
-        // Flatten the front area (valley floor)
-        if (z > 20) {
-            const valleyFloor = Math.max(0, (z - 20) / 30);
-            height *= (1 - valleyFloor);
+                const height = this.calculateHeight(worldX, worldZ);
+                this.heightMap[z * this.heightMapSize + x] = height;
+            }
         }
 
-        // Minimum height
-        height = Math.max(-2, height);
+        // Apply smoothing passes for gentler slopes
+        this.smoothHeightMap(3);
+    }
+
+    calculateHeight(x, z) {
+        let height = 0;
+
+        // Distance from center for falloff
+        const distFromCenter = Math.sqrt(x * x + z * z);
+        const edgeFalloff = this.smoothstep(60, 45, distFromCenter);
+
+        // Bias toward back of terrain (mountains in back, valley in front)
+        const backBias = this.smoothstep(40, -30, z);
+
+        // Main terrain shape using smooth noise
+        const baseNoise = this.fbmNoise(x * 0.015, z * 0.015, 4, 0.5, 2.0);
+        height += baseNoise * 25 * edgeFalloff;
+
+        // Large rounded peaks
+        const peak1 = this.gaussianPeak(x, z, 0, -25, 35, 30);
+        const peak2 = this.gaussianPeak(x, z, -25, -15, 28, 25);
+        const peak3 = this.gaussianPeak(x, z, 25, -20, 25, 28);
+        const peak4 = this.gaussianPeak(x, z, -15, -35, 20, 22);
+        const peak5 = this.gaussianPeak(x, z, 15, -38, 18, 20);
+
+        height += (peak1 + peak2 + peak3 + peak4 + peak5) * backBias;
+
+        // Gentle rolling hills using low-frequency noise
+        const hills = this.fbmNoise(x * 0.03 + 100, z * 0.03 + 100, 2, 0.5, 2.0);
+        height += hills * 8 * edgeFalloff * (1 - backBias * 0.5);
+
+        // Valley floor in front
+        const valleyFloor = this.smoothstep(15, 35, z);
+        height *= (1 - valleyFloor * 0.8);
+
+        // Ensure minimum height and smooth edges
+        height = Math.max(-1, height);
+
+        // Smooth terrain edges to zero
+        const edgeSmooth = this.smoothstep(55, 50, distFromCenter);
+        height *= edgeSmooth;
 
         return height;
     }
 
-    // Simple noise function
-    noise(x, z) {
-        const n = Math.sin(x * 12.9898 + z * 78.233) * 43758.5453;
+    // Gaussian peak for smooth, rounded mountains
+    gaussianPeak(x, z, centerX, centerZ, height, radius) {
+        const dx = x - centerX;
+        const dz = z - centerZ;
+        const distSq = dx * dx + dz * dz;
+        return height * Math.exp(-distSq / (radius * radius));
+    }
+
+    // Smooth noise using value noise with cubic interpolation
+    valueNoise(x, z) {
+        const xi = Math.floor(x);
+        const zi = Math.floor(z);
+        const xf = x - xi;
+        const zf = z - zi;
+
+        // Smooth interpolation curve
+        const u = this.smootherstep(xf);
+        const v = this.smootherstep(zf);
+
+        // Hash corners
+        const n00 = this.hash2D(xi, zi);
+        const n10 = this.hash2D(xi + 1, zi);
+        const n01 = this.hash2D(xi, zi + 1);
+        const n11 = this.hash2D(xi + 1, zi + 1);
+
+        // Bilinear interpolation
+        const nx0 = this.lerp(n00, n10, u);
+        const nx1 = this.lerp(n01, n11, u);
+        return this.lerp(nx0, nx1, v);
+    }
+
+    // Fractal Brownian Motion for natural-looking terrain
+    fbmNoise(x, z, octaves, persistence, lacunarity) {
+        let total = 0;
+        let amplitude = 1;
+        let frequency = 1;
+        let maxValue = 0;
+
+        for (let i = 0; i < octaves; i++) {
+            total += this.valueNoise(x * frequency + this.seed, z * frequency + this.seed) * amplitude;
+            maxValue += amplitude;
+            amplitude *= persistence;
+            frequency *= lacunarity;
+        }
+
+        return total / maxValue;
+    }
+
+    // Hash function for noise
+    hash2D(x, z) {
+        let n = Math.sin(x * 127.1 + z * 311.7 + this.seed) * 43758.5453;
         return (n - Math.floor(n)) * 2 - 1;
+    }
+
+    // Interpolation helpers
+    lerp(a, b, t) {
+        return a + (b - a) * t;
+    }
+
+    smoothstep(edge0, edge1, x) {
+        const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0)));
+        return t * t * (3 - 2 * t);
+    }
+
+    smootherstep(t) {
+        return t * t * t * (t * (t * 6 - 15) + 10);
+    }
+
+    // Smooth the height map for gentler slopes
+    smoothHeightMap(passes) {
+        for (let pass = 0; pass < passes; pass++) {
+            const newHeightMap = new Float32Array(this.heightMap.length);
+
+            for (let z = 0; z < this.heightMapSize; z++) {
+                for (let x = 0; x < this.heightMapSize; x++) {
+                    let sum = 0;
+                    let count = 0;
+
+                    // 3x3 kernel averaging
+                    for (let dz = -1; dz <= 1; dz++) {
+                        for (let dx = -1; dx <= 1; dx++) {
+                            const nx = x + dx;
+                            const nz = z + dz;
+                            if (nx >= 0 && nx < this.heightMapSize && nz >= 0 && nz < this.heightMapSize) {
+                                const weight = (dx === 0 && dz === 0) ? 4 : 1;
+                                sum += this.heightMap[nz * this.heightMapSize + nx] * weight;
+                                count += weight;
+                            }
+                        }
+                    }
+
+                    newHeightMap[z * this.heightMapSize + x] = sum / count;
+                }
+            }
+
+            this.heightMap = newHeightMap;
+        }
+    }
+
+    applyHeightMap() {
+        const positions = this.geometry.attributes.position.array;
+
+        for (let i = 0; i < positions.length; i += 3) {
+            const x = positions[i];
+            const z = positions[i + 2];
+
+            // Convert world position to heightmap index
+            const hmX = Math.round((x / this.width + 0.5) * this.segments);
+            const hmZ = Math.round((z / this.depth + 0.5) * this.segments);
+
+            const clampedX = Math.max(0, Math.min(this.segments, hmX));
+            const clampedZ = Math.max(0, Math.min(this.segments, hmZ));
+
+            positions[i + 1] = this.heightMap[clampedZ * this.heightMapSize + clampedX];
+        }
+
+        this.geometry.attributes.position.needsUpdate = true;
     }
 
     applyVertexColors() {
@@ -129,43 +250,49 @@ export class Mountain {
         const normals = this.geometry.attributes.normal.array;
         const colors = new Float32Array(positions.length);
 
-        // Snow color palette
-        const snowWhite = new THREE.Color(0xffffff);
-        const snowBlue = new THREE.Color(0xe8f4f8);
-        const snowShadow = new THREE.Color(0xc5d8e0);
-        const rockGray = new THREE.Color(0x6b7b8c);
-        const rockDark = new THREE.Color(0x4a5568);
+        // Snow color palette (softer, more natural)
+        const snowBright = new THREE.Color(0xfcfcfc);
+        const snowMid = new THREE.Color(0xe8f0f5);
+        const snowShadow = new THREE.Color(0xd0dce5);
+        const rockLight = new THREE.Color(0x8899a8);
+        const rockDark = new THREE.Color(0x5a6a7a);
 
+        // Use deterministic variation instead of random
         for (let i = 0; i < positions.length; i += 3) {
+            const x = positions[i];
             const y = positions[i + 1];
+            const z = positions[i + 2];
             const normalY = normals[i + 1];
 
             let color = new THREE.Color();
 
-            // Steep slopes show rock
-            const steepness = 1 - Math.abs(normalY);
+            // Slope angle (0 = vertical cliff, 1 = flat)
+            const slopeAngle = Math.abs(normalY);
 
-            if (steepness > 0.6) {
-                // Rocky
-                color.lerpColors(rockGray, rockDark, Math.random() * 0.5);
-            } else if (steepness > 0.4) {
-                // Mixed rock/snow
-                color.lerpColors(snowShadow, rockGray, steepness - 0.4);
+            // Deterministic variation based on position
+            const variation = this.hash2D(x * 0.5, z * 0.5) * 0.5 + 0.5;
+
+            if (slopeAngle < 0.5) {
+                // Steep = rocky
+                color.lerpColors(rockDark, rockLight, variation);
+            } else if (slopeAngle < 0.7) {
+                // Moderate slope = mixed
+                const t = (slopeAngle - 0.5) / 0.2;
+                const rockColor = new THREE.Color().lerpColors(rockDark, rockLight, variation);
+                color.lerpColors(rockColor, snowShadow, t);
             } else {
-                // Snow with subtle variation
-                const t = Math.random();
-                if (t > 0.7) {
-                    color.copy(snowWhite);
-                } else if (t > 0.3) {
-                    color.copy(snowBlue);
+                // Gentle slope = snow
+                if (variation > 0.6) {
+                    color.copy(snowBright);
+                } else if (variation > 0.3) {
+                    color.copy(snowMid);
                 } else {
                     color.copy(snowShadow);
                 }
 
-                // Slightly blue-er in shadows (lower areas)
-                if (y < 10) {
-                    color.lerp(snowShadow, 0.3);
-                }
+                // Altitude-based tinting
+                const altitudeFactor = Math.min(1, y / this.maxHeight);
+                color.lerp(snowBright, altitudeFactor * 0.3);
             }
 
             colors[i] = color.r;
@@ -176,97 +303,37 @@ export class Mountain {
         this.geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
     }
 
-    addSkiSlopes() {
-        // Add visible groomed ski runs
-        const slopeMaterial = new THREE.MeshStandardMaterial({
-            color: 0xf5f9fc,
-            roughness: 0.7,
-            flatShading: true
-        });
-
-        // Main slope path
-        const slopePoints = [
-            new THREE.Vector3(-5, this.getHeightAt(-5, -25) + 0.1, -25),
-            new THREE.Vector3(-8, this.getHeightAt(-8, -15) + 0.1, -15),
-            new THREE.Vector3(-3, this.getHeightAt(-3, -5) + 0.1, -5),
-            new THREE.Vector3(5, this.getHeightAt(5, 10) + 0.1, 10),
-            new THREE.Vector3(10, this.getHeightAt(10, 25) + 0.1, 25)
-        ];
-
-        // Create slope mesh (simplified ribbon)
-        this.createSlopeRibbon(slopePoints, 4, slopeMaterial);
-
-        // Secondary slope
-        const slope2Points = [
-            new THREE.Vector3(25, this.getHeightAt(25, -15) + 0.1, -15),
-            new THREE.Vector3(20, this.getHeightAt(20, -5) + 0.1, -5),
-            new THREE.Vector3(15, this.getHeightAt(15, 10) + 0.1, 10),
-            new THREE.Vector3(10, this.getHeightAt(10, 20) + 0.1, 20)
-        ];
-
-        this.createSlopeRibbon(slope2Points, 3, slopeMaterial);
-    }
-
-    createSlopeRibbon(points, width, material) {
-        if (points.length < 2) return;
-
-        const curve = new THREE.CatmullRomCurve3(points);
-        const curvePoints = curve.getPoints(30);
-
-        const vertices = [];
-        const indices = [];
-
-        for (let i = 0; i < curvePoints.length; i++) {
-            const point = curvePoints[i];
-            const tangent = curve.getTangentAt(i / (curvePoints.length - 1));
-
-            // Perpendicular direction
-            const perp = new THREE.Vector3(-tangent.z, 0, tangent.x).normalize();
-
-            // Left and right edge points
-            const left = point.clone().add(perp.clone().multiplyScalar(width / 2));
-            const right = point.clone().sub(perp.clone().multiplyScalar(width / 2));
-
-            // Snap to terrain height
-            left.y = this.getHeightAt(left.x, left.z) + 0.15;
-            right.y = this.getHeightAt(right.x, right.z) + 0.15;
-
-            vertices.push(left.x, left.y, left.z);
-            vertices.push(right.x, right.y, right.z);
-        }
-
-        // Create faces
-        for (let i = 0; i < curvePoints.length - 1; i++) {
-            const a = i * 2;
-            const b = i * 2 + 1;
-            const c = (i + 1) * 2;
-            const d = (i + 1) * 2 + 1;
-
-            indices.push(a, b, c);
-            indices.push(b, d, c);
-        }
-
-        const geometry = new THREE.BufferGeometry();
-        geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
-        geometry.setIndex(indices);
-        geometry.computeVertexNormals();
-
-        const mesh = new THREE.Mesh(geometry, material);
-        mesh.receiveShadow = true;
-        mesh.name = 'skiSlope';
-        this.scene.add(mesh);
-    }
-
-    // Get terrain height at any x, z position
+    // Get height at world position using bilinear interpolation
     getHeightAt(x, z) {
         // Clamp to terrain bounds
         x = Math.max(-this.width / 2, Math.min(this.width / 2, x));
         z = Math.max(-this.depth / 2, Math.min(this.depth / 2, z));
 
-        return this.generateHeight(x, z);
+        // Convert to heightmap coordinates
+        const hmX = (x / this.width + 0.5) * this.segments;
+        const hmZ = (z / this.depth + 0.5) * this.segments;
+
+        // Bilinear interpolation
+        const x0 = Math.floor(hmX);
+        const z0 = Math.floor(hmZ);
+        const x1 = Math.min(x0 + 1, this.segments);
+        const z1 = Math.min(z0 + 1, this.segments);
+
+        const xFrac = hmX - x0;
+        const zFrac = hmZ - z0;
+
+        const h00 = this.heightMap[z0 * this.heightMapSize + x0];
+        const h10 = this.heightMap[z0 * this.heightMapSize + x1];
+        const h01 = this.heightMap[z1 * this.heightMapSize + x0];
+        const h11 = this.heightMap[z1 * this.heightMapSize + x1];
+
+        const h0 = h00 + (h10 - h00) * xFrac;
+        const h1 = h01 + (h11 - h01) * xFrac;
+
+        return h0 + (h1 - h0) * zFrac;
     }
 
-    // Get terrain normal at position (for object alignment)
+    // Get terrain normal at position
     getNormalAt(x, z) {
         const epsilon = 0.5;
         const h = this.getHeightAt(x, z);
@@ -282,7 +349,78 @@ export class Mountain {
         return normal;
     }
 
-    // Raycast to terrain for precise placement
+    // Get slope angle at position (0 = flat, 1 = vertical)
+    getSlopeAt(x, z) {
+        const normal = this.getNormalAt(x, z);
+        return 1 - Math.abs(normal.y);
+    }
+
+    // Sculpt terrain at position
+    sculpt(x, z, mode, delta = 1) {
+        const hmX = Math.round((x / this.width + 0.5) * this.segments);
+        const hmZ = Math.round((z / this.depth + 0.5) * this.segments);
+        const radiusInCells = Math.ceil(this.sculptRadius / (this.width / this.segments));
+
+        for (let dz = -radiusInCells; dz <= radiusInCells; dz++) {
+            for (let dx = -radiusInCells; dx <= radiusInCells; dx++) {
+                const nx = hmX + dx;
+                const nz = hmZ + dz;
+
+                if (nx < 0 || nx > this.segments || nz < 0 || nz > this.segments) continue;
+
+                // Calculate distance falloff
+                const worldDx = dx * (this.width / this.segments);
+                const worldDz = dz * (this.depth / this.segments);
+                const dist = Math.sqrt(worldDx * worldDx + worldDz * worldDz);
+                if (dist > this.sculptRadius) continue;
+
+                const falloff = 1 - (dist / this.sculptRadius);
+                const smoothFalloff = falloff * falloff * (3 - 2 * falloff); // Smoothstep
+
+                const idx = nz * this.heightMapSize + nx;
+                const amount = this.sculptStrength * smoothFalloff * delta;
+
+                switch (mode) {
+                    case 'raise':
+                        this.heightMap[idx] += amount;
+                        break;
+                    case 'lower':
+                        this.heightMap[idx] -= amount;
+                        break;
+                    case 'smooth':
+                        // Average with neighbors
+                        let sum = 0;
+                        let count = 0;
+                        for (let sz = -1; sz <= 1; sz++) {
+                            for (let sx = -1; sx <= 1; sx++) {
+                                const snx = nx + sx;
+                                const snz = nz + sz;
+                                if (snx >= 0 && snx <= this.segments && snz >= 0 && snz <= this.segments) {
+                                    sum += this.heightMap[snz * this.heightMapSize + snx];
+                                    count++;
+                                }
+                            }
+                        }
+                        const avg = sum / count;
+                        this.heightMap[idx] = this.lerp(this.heightMap[idx], avg, smoothFalloff * 0.5);
+                        break;
+                    case 'flatten':
+                        // Flatten toward target height
+                        const targetHeight = this.heightMap[hmZ * this.heightMapSize + hmX];
+                        this.heightMap[idx] = this.lerp(this.heightMap[idx], targetHeight, smoothFalloff * 0.3);
+                        break;
+                }
+            }
+        }
+
+        // Update geometry
+        this.applyHeightMap();
+        this.geometry.computeVertexNormals();
+        this.applyVertexColors();
+        this.geometry.attributes.color.needsUpdate = true;
+    }
+
+    // Raycast to terrain
     raycast(raycaster) {
         if (!this.mesh) return null;
 
@@ -291,5 +429,20 @@ export class Mountain {
             return intersects[0];
         }
         return null;
+    }
+
+    // Regenerate terrain with new seed
+    regenerate(seed = null) {
+        if (seed !== null) {
+            this.seed = seed;
+        } else {
+            this.seed = Math.random() * 1000;
+        }
+
+        this.generateHeightMap();
+        this.applyHeightMap();
+        this.geometry.computeVertexNormals();
+        this.applyVertexColors();
+        this.geometry.attributes.color.needsUpdate = true;
     }
 }
