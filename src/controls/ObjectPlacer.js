@@ -397,21 +397,33 @@ export class ObjectPlacer {
             }
         }
 
-        // Rotate preview/selected object with R or arrow keys
-        if (event.key === 'r' || event.key === 'R') {
-            const target = this.previewObject || (this.selectedObject && this.selectedObject.object);
-            if (target) {
-                target.rotation.y += Math.PI / 4; // 45 degree rotation
-            }
+        // Get target for rotation (preview or selected object)
+        const target = this.previewObject || (this.selectedObject && this.selectedObject.object);
+
+        // Rotate with R key (quick 45 degree yaw rotation)
+        if ((event.key === 'r' || event.key === 'R') && target) {
+            target.rotation.y += Math.PI / 4;
         }
 
-        // Arrow keys for finer rotation control when placing
-        if (this.previewObject) {
+        // Arrow keys for pitch and yaw control
+        if (target) {
+            const rotationStep = Math.PI / 12; // 15 degrees
+
+            // Left/Right arrows = Yaw (rotation around Y axis)
             if (event.key === 'ArrowLeft') {
-                this.previewObject.rotation.y += Math.PI / 12; // 15 degree rotation
+                target.rotation.y += rotationStep;
                 event.preventDefault();
             } else if (event.key === 'ArrowRight') {
-                this.previewObject.rotation.y -= Math.PI / 12; // 15 degree rotation
+                target.rotation.y -= rotationStep;
+                event.preventDefault();
+            }
+
+            // Up/Down arrows = Pitch (rotation around X axis)
+            if (event.key === 'ArrowUp') {
+                target.rotation.x -= rotationStep;
+                event.preventDefault();
+            } else if (event.key === 'ArrowDown') {
+                target.rotation.x += rotationStep;
                 event.preventDefault();
             }
         }

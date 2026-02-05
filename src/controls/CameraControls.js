@@ -27,11 +27,11 @@ export class CameraControls {
         this.controls.panSpeed = 0.8;
         this.controls.screenSpacePanning = false; // Pan parallel to ground
 
-        // Zoom settings
+        // Zoom settings (scaled for larger terrain)
         this.controls.enableZoom = true;
-        this.controls.zoomSpeed = 1.0;
-        this.controls.minDistance = 15;
-        this.controls.maxDistance = 150;
+        this.controls.zoomSpeed = 1.2;
+        this.controls.minDistance = 20;
+        this.controls.maxDistance = 600;
 
         // Rotation settings
         this.controls.enableRotate = true;
@@ -77,20 +77,20 @@ export class CameraControls {
         this.camera.position.y = Math.max(position.y + 10, this.camera.position.y);
     }
 
-    // Reset to default view
+    // Reset to default view (scaled for larger terrain)
     reset() {
-        this.camera.position.set(40, 30, 50);
-        this.controls.target.set(0, 5, 0);
+        this.camera.position.set(150, 100, 200);
+        this.controls.target.set(0, 10, 0);
         this.controls.update();
     }
 
-    // Set camera to a preset view
+    // Set camera to a preset view (scaled for larger terrain)
     setView(view) {
         const views = {
-            'top': { pos: [0, 80, 0.1], target: [0, 0, 0] },
-            'front': { pos: [0, 20, 60], target: [0, 5, 0] },
-            'side': { pos: [60, 20, 0], target: [0, 5, 0] },
-            'default': { pos: [40, 30, 50], target: [0, 5, 0] }
+            'top': { pos: [0, 400, 0.1], target: [0, 0, 0] },
+            'front': { pos: [0, 80, 300], target: [0, 10, 0] },
+            'side': { pos: [300, 80, 0], target: [0, 10, 0] },
+            'default': { pos: [150, 100, 200], target: [0, 10, 0] }
         };
 
         const v = views[view] || views.default;

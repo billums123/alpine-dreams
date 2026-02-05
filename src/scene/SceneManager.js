@@ -17,17 +17,17 @@ export class SceneManager {
     async init() {
         // Create scene
         this.scene = new THREE.Scene();
-        this.scene.fog = new THREE.FogExp2(0x9bb5ce, 0.008);
+        this.scene.fog = new THREE.FogExp2(0x9bb5ce, 0.002); // Less fog for larger terrain
 
-        // Create camera
+        // Create camera (scaled for larger terrain)
         this.camera = new THREE.PerspectiveCamera(
             60,
             window.innerWidth / window.innerHeight,
             0.1,
-            1000
+            3000
         );
-        this.camera.position.set(40, 30, 50);
-        this.camera.lookAt(0, 5, 0);
+        this.camera.position.set(150, 100, 200);
+        this.camera.lookAt(0, 10, 0);
 
         // Create renderer
         const canvas = document.getElementById(this.canvasId);

@@ -10,11 +10,11 @@ export class Mountain {
         this.mesh = null;
         this.geometry = null;
 
-        // Terrain parameters
-        this.width = 120;
-        this.depth = 120;
-        this.segments = 80; // Higher resolution for smoother terrain
-        this.maxHeight = 40;
+        // Terrain parameters (5x larger terrain)
+        this.width = 600;
+        this.depth = 600;
+        this.segments = 200; // Higher resolution for larger terrain
+        this.maxHeight = 80;
 
         // Height map for fast lookups
         this.heightMap = null;
@@ -22,7 +22,7 @@ export class Mountain {
 
         // Sculpting state
         this.sculptMode = null; // 'raise', 'lower', 'smooth', 'flatten'
-        this.sculptRadius = 8;
+        this.sculptRadius = 20; // Larger for bigger terrain
         this.sculptStrength = 0.5;
 
         // Noise seed for reproducibility
@@ -35,14 +35,14 @@ export class Mountain {
     // Generate random peak positions and heights
     generateRandomPeaks() {
         const peaks = [];
-        const numPeaks = 5 + Math.floor(this.seededRandom() * 4); // 5-8 peaks
+        const numPeaks = 8 + Math.floor(this.seededRandom() * 8); // 8-15 peaks for larger terrain
 
         for (let i = 0; i < numPeaks; i++) {
             peaks.push({
-                x: (this.seededRandom() - 0.5) * 60,
-                z: -10 - this.seededRandom() * 40, // Mostly in back half
-                height: 15 + this.seededRandom() * 25,
-                radius: 18 + this.seededRandom() * 20
+                x: (this.seededRandom() - 0.5) * 300, // Scaled for 5x terrain
+                z: -50 - this.seededRandom() * 200, // Mostly in back half
+                height: 30 + this.seededRandom() * 50, // Taller peaks
+                radius: 50 + this.seededRandom() * 80 // Wider peaks
             });
         }
 
@@ -114,17 +114,17 @@ export class Mountain {
     calculateHeight(x, z) {
         let height = 0;
 
-        // Distance from center for falloff
+        // Distance from center for falloff (scaled for 5x larger terrain)
         const distFromCenter = Math.sqrt(x * x + z * z);
-        const edgeFalloff = this.smoothstep(60, 45, distFromCenter);
+        const edgeFalloff = this.smoothstep(300, 225, distFromCenter);
 
         // Bias toward back of terrain (mountains in back, valley in front)
-        const backBias = this.smoothstep(40, -30, z);
+        const backBias = this.smoothstep(200, -150, z);
 
         // Main terrain shape using smooth noise (with seed offset for variation)
-        const noiseScale = 0.012 + (this.seed % 100) / 10000; // Slight variation in scale
+        const noiseScale = 0.003 + (this.seed % 100) / 50000; // Adjusted for larger scale
         const baseNoise = this.fbmNoise(x * noiseScale + this.seed, z * noiseScale, 4, 0.5, 2.0);
-        height += baseNoise * 28 * edgeFalloff;
+        height += baseNoise * 50 * edgeFalloff;
 
         // Large rounded peaks (randomized)
         let peakHeight = 0;
@@ -134,19 +134,19 @@ export class Mountain {
         height += peakHeight * backBias;
 
         // Gentle rolling hills using low-frequency noise (with seed variation)
-        const hillScale = 0.025 + (this.seed % 50) / 5000;
+        const hillScale = 0.006 + (this.seed % 50) / 25000;
         const hills = this.fbmNoise(x * hillScale + this.seed * 0.1, z * hillScale + 100, 2, 0.5, 2.0);
-        height += hills * 10 * edgeFalloff * (1 - backBias * 0.5);
+        height += hills * 20 * edgeFalloff * (1 - backBias * 0.5);
 
-        // Valley floor in front
-        const valleyFloor = this.smoothstep(15, 35, z);
+        // Valley floor in front (scaled)
+        const valleyFloor = this.smoothstep(75, 175, z);
         height *= (1 - valleyFloor * 0.8);
 
         // Ensure minimum height and smooth edges
         height = Math.max(-1, height);
 
-        // Smooth terrain edges to zero
-        const edgeSmooth = this.smoothstep(55, 50, distFromCenter);
+        // Smooth terrain edges to zero (scaled)
+        const edgeSmooth = this.smoothstep(290, 270, distFromCenter);
         height *= edgeSmooth;
 
         return height;
