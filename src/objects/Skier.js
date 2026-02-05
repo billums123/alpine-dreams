@@ -22,13 +22,13 @@ export class Skier {
         this.edgeAngle = 0; // Lean angle for turning
 
         // Physics constants - tuned for fun skiing
-        this.gravity = 15; // Gravity for slope acceleration
+        this.gravity = 25; // Gravity for slope acceleration (increased for faster skiing)
         this.airGravity = 20; // Realistic gravity when airborne (9.8 m/s^2 scaled)
         this.airFriction = 0.005;
         this.turnSpeed = 2.5; // How fast you can turn
-        this.maxSpeed = 35; // Top speed
+        this.maxSpeed = 50; // Top speed (increased)
         this.brakeForce = 0.92; // Multiplier when braking
-        this.jumpForce = 5; // Realistic small hop
+        this.jumpForce = 6; // Slightly stronger jump
 
         // Starting position for reset
         this.startPosition = new THREE.Vector3();
@@ -74,8 +74,12 @@ export class Skier {
             backward: false,
             left: false,
             right: false,
-            jump: false
+            jump: false,
+            tuck: false // W/Up arrow for tucking (faster speed)
         };
+
+        // Tuck state for speed boost
+        this.isTucking = false;
 
         // Camera settings
         this.cameraOffset = new THREE.Vector3(0, 4, 10);
@@ -156,20 +160,26 @@ export class Skier {
         const headGeometry = new THREE.SphereGeometry(0.16, 12, 10);
         const head = new THREE.Mesh(headGeometry, skinMaterial);
         head.position.set(0, 1.52, 0.05);
+        head.name = 'head';
         skier.add(head);
+        this.bodyParts.head = head;
 
         // Helmet
         const helmetGeometry = new THREE.SphereGeometry(0.19, 12, 10, 0, Math.PI * 2, 0, Math.PI * 0.6);
         const helmet = new THREE.Mesh(helmetGeometry, helmetMaterial);
         helmet.position.set(0, 1.56, 0.02);
         helmet.rotation.x = -0.1;
+        helmet.name = 'helmet';
         skier.add(helmet);
+        this.bodyParts.helmet = helmet;
 
         // Goggles
         const gogglesGeometry = new THREE.BoxGeometry(0.28, 0.08, 0.06);
         const goggles = new THREE.Mesh(gogglesGeometry, gogglesMaterial);
         goggles.position.set(0, 1.52, 0.16);
+        goggles.name = 'goggles';
         skier.add(goggles);
+        this.bodyParts.goggles = goggles;
 
         // Goggle strap
         const strapGeometry = new THREE.TorusGeometry(0.17, 0.015, 6, 16, Math.PI);
@@ -177,25 +187,37 @@ export class Skier {
         strap.position.set(0, 1.54, 0.02);
         strap.rotation.x = Math.PI / 2;
         strap.rotation.z = Math.PI;
+        strap.name = 'strap';
         skier.add(strap);
+        this.bodyParts.strap = strap;
 
         // Upper legs (thighs)
-        [-0.12, 0.12].forEach(x => {
+        const thighs = [];
+        [-0.12, 0.12].forEach((x, i) => {
             const thighGeometry = new THREE.CapsuleGeometry(0.09, 0.25, 6, 8);
             const thigh = new THREE.Mesh(thighGeometry, pantsMaterial);
             thigh.position.set(x, 0.62, 0.08);
             thigh.rotation.x = 0.8;
+            thigh.name = i === 0 ? 'leftThigh' : 'rightThigh';
             skier.add(thigh);
+            thighs.push(thigh);
         });
+        this.bodyParts.leftThigh = thighs[0];
+        this.bodyParts.rightThigh = thighs[1];
 
         // Lower legs (shins)
-        [-0.14, 0.14].forEach(x => {
+        const shins = [];
+        [-0.14, 0.14].forEach((x, i) => {
             const shinGeometry = new THREE.CapsuleGeometry(0.07, 0.22, 6, 8);
             const shin = new THREE.Mesh(shinGeometry, pantsMaterial);
             shin.position.set(x, 0.32, 0.18);
             shin.rotation.x = 0.15;
+            shin.name = i === 0 ? 'leftShin' : 'rightShin';
             skier.add(shin);
+            shins.push(shin);
         });
+        this.bodyParts.leftShin = shins[0];
+        this.bodyParts.rightShin = shins[1];
 
         // Ski boots
         [-0.15, 0.15].forEach(x => {
@@ -205,32 +227,41 @@ export class Skier {
             skier.add(boot);
         });
 
-        // Arms - proper skiing stance with arms forward holding poles
+        // Arms - natural skiing stance with bent elbows, hands forward
+        const arms = { left: {}, right: {} };
         [-1, 1].forEach(side => {
-            const x = side * 0.28;
+            const armKey = side === -1 ? 'left' : 'right';
 
-            // Upper arm - angled down and slightly forward from shoulder
-            const upperArmGeometry = new THREE.CapsuleGeometry(0.055, 0.18, 6, 8);
+            // Upper arm - hangs down from shoulder, slightly forward and out
+            const upperArmGeometry = new THREE.CapsuleGeometry(0.055, 0.2, 6, 8);
             const upperArm = new THREE.Mesh(upperArmGeometry, jacketMaterial);
-            upperArm.position.set(x, 1.0, 0.08);
-            upperArm.rotation.z = side * -0.8; // Angle outward
-            upperArm.rotation.x = 0.5; // Angle forward
+            upperArm.position.set(side * 0.24, 0.95, 0.05);
+            upperArm.rotation.z = side * -0.4; // Slight angle outward
+            upperArm.rotation.x = 0.3; // Slight forward angle
+            upperArm.name = armKey + 'UpperArm';
             skier.add(upperArm);
+            arms[armKey].upperArm = upperArm;
 
-            // Forearm - bent at elbow, pointing forward/down to hold poles
-            const forearmGeometry = new THREE.CapsuleGeometry(0.045, 0.15, 6, 8);
+            // Forearm - bent at elbow ~90 degrees, pointing forward
+            const forearmGeometry = new THREE.CapsuleGeometry(0.045, 0.18, 6, 8);
             const forearm = new THREE.Mesh(forearmGeometry, jacketMaterial);
-            forearm.position.set(side * 0.38, 0.82, 0.22);
-            forearm.rotation.z = side * -0.3;
-            forearm.rotation.x = 1.2; // More forward angle
+            forearm.position.set(side * 0.32, 0.72, 0.22);
+            forearm.rotation.z = side * -0.15;
+            forearm.rotation.x = 1.1; // Pointing forward/down
+            forearm.name = armKey + 'Forearm';
             skier.add(forearm);
+            arms[armKey].forearm = forearm;
 
-            // Glove/hand - at end of forearm
+            // Glove/hand - in front of body at waist level
             const gloveGeometry = new THREE.SphereGeometry(0.05, 8, 6);
             const glove = new THREE.Mesh(gloveGeometry, gloveMaterial);
-            glove.position.set(side * 0.4, 0.68, 0.38);
+            glove.position.set(side * 0.28, 0.58, 0.42);
+            glove.name = armKey + 'Glove';
             skier.add(glove);
+            arms[armKey].glove = glove;
         });
+        this.bodyParts.leftArm = arms.left;
+        this.bodyParts.rightArm = arms.right;
 
         // Skis
         [-0.15, 0.15].forEach(x => {
@@ -261,33 +292,82 @@ export class Skier {
             skier.add(binding);
         });
 
-        // Poles - positioned to be held by hands
+        // Poles - as groups that can be animated with arms
+        const poles = { left: null, right: null };
         [-1, 1].forEach(side => {
-            const handX = side * 0.4;
-            const handY = 0.68;
-            const handZ = 0.38;
+            const poleKey = side === -1 ? 'left' : 'right';
 
-            // Pole shaft - angled back from hand position
-            const shaftGeometry = new THREE.CylinderGeometry(0.012, 0.012, 1.0, 8);
-            const shaft = new THREE.Mesh(shaftGeometry, poleMaterial);
-            shaft.position.set(handX + side * 0.05, handY - 0.4, handZ - 0.25);
-            shaft.rotation.x = 0.4;
-            shaft.rotation.z = side * -0.1;
-            skier.add(shaft);
+            // Create pole group anchored at grip position
+            const poleGroup = new THREE.Group();
+            poleGroup.name = poleKey + 'Pole';
 
-            // Pole basket - near bottom of pole
-            const basketGeometry = new THREE.CylinderGeometry(0.05, 0.05, 0.01, 8);
-            const basket = new THREE.Mesh(basketGeometry, poleMaterial);
-            basket.position.set(handX + side * 0.08, 0.05, handZ - 0.55);
-            skier.add(basket);
+            // Default hand position (matches glove position)
+            const handX = side * 0.28;
+            const handY = 0.58;
+            const handZ = 0.42;
+            poleGroup.position.set(handX, handY, handZ);
 
-            // Pole grip - at hand position
-            const gripGeometry = new THREE.CylinderGeometry(0.022, 0.018, 0.1, 8);
+            // Pole grip - at origin of group (hand holds here)
+            const gripGeometry = new THREE.CylinderGeometry(0.025, 0.02, 0.12, 8);
             const grip = new THREE.Mesh(gripGeometry, gloveMaterial);
-            grip.position.set(handX, handY, handZ);
-            grip.rotation.x = 0.4;
-            skier.add(grip);
+            grip.position.set(0, 0, 0);
+            grip.rotation.x = Math.PI / 2 + 0.3; // Angled forward
+            grip.rotation.z = side * 0.1;
+            poleGroup.add(grip);
+
+            // Pole wrist strap
+            const strapLoopGeo = new THREE.TorusGeometry(0.03, 0.005, 6, 12);
+            const strapLoop = new THREE.Mesh(strapLoopGeo, poleMaterial);
+            strapLoop.position.set(0, 0.02, 0.04);
+            strapLoop.rotation.x = Math.PI / 2;
+            poleGroup.add(strapLoop);
+
+            // Pole shaft - extends down and back from grip
+            const shaftGeometry = new THREE.CylinderGeometry(0.012, 0.01, 1.1, 8);
+            const shaft = new THREE.Mesh(shaftGeometry, poleMaterial);
+            shaft.position.set(side * 0.02, -0.45, -0.25);
+            shaft.rotation.x = 0.5;
+            shaft.rotation.z = side * -0.05;
+            poleGroup.add(shaft);
+
+            // Pole basket - ring near bottom
+            const basketRingGeo = new THREE.TorusGeometry(0.045, 0.008, 8, 16);
+            const basketRing = new THREE.Mesh(basketRingGeo, poleMaterial);
+            basketRing.position.set(side * 0.03, -0.85, -0.48);
+            basketRing.rotation.x = Math.PI / 2 + 0.5;
+            poleGroup.add(basketRing);
+
+            // Basket spokes
+            for (let i = 0; i < 4; i++) {
+                const spokeGeo = new THREE.CylinderGeometry(0.003, 0.003, 0.08, 4);
+                const spoke = new THREE.Mesh(spokeGeo, poleMaterial);
+                const angle = (i / 4) * Math.PI * 2;
+                spoke.position.set(
+                    side * 0.03 + Math.cos(angle) * 0.022,
+                    -0.85,
+                    -0.48 + Math.sin(angle) * 0.022
+                );
+                spoke.rotation.x = Math.PI / 2 + 0.5;
+                poleGroup.add(spoke);
+            }
+
+            // Pole tip - pointed end
+            const tipGeometry = new THREE.ConeGeometry(0.015, 0.06, 6);
+            const tipMaterial = new THREE.MeshStandardMaterial({
+                color: 0x888888,
+                roughness: 0.3,
+                metalness: 0.8
+            });
+            const tip = new THREE.Mesh(tipGeometry, tipMaterial);
+            tip.position.set(side * 0.035, -0.95, -0.55);
+            tip.rotation.x = Math.PI + 0.5;
+            poleGroup.add(tip);
+
+            skier.add(poleGroup);
+            poles[poleKey] = poleGroup;
         });
+        this.bodyParts.leftPole = poles.left;
+        this.bodyParts.rightPole = poles.right;
 
         skier.castShadow = true;
         skier.traverse(child => {
@@ -506,6 +586,7 @@ export class Skier {
             case 'KeyW':
             case 'ArrowUp':
                 this.input.forward = true;
+                this.input.tuck = true;
                 // Initiate backflip if airborne and not already flipping
                 if (!this.isGrounded && !this.isFlipping && this.verticalVelocity > 0) {
                     this.startFlip(1); // Backflip
@@ -614,6 +695,7 @@ export class Skier {
             case 'KeyW':
             case 'ArrowUp':
                 this.input.forward = false;
+                this.input.tuck = false;
                 break;
             case 'KeyS':
             case 'ArrowDown':
@@ -698,18 +780,22 @@ export class Skier {
 
             this.currentSpeed += effectiveAccel * delta;
 
+            // TUCKING: Reduces drag for higher speed
+            this.isTucking = this.input.tuck && Math.abs(this.edgeAngle) < 0.3;
+
             // FRICTION: Very low base friction, more when turning hard
-            const baseFriction = 0.003; // Minimal friction when straight
+            const baseFriction = this.isTucking ? 0.001 : 0.003; // Much less friction when tucking
             const turnFriction = Math.abs(this.edgeAngle) * 0.025; // Carving scrubs speed
             this.currentSpeed *= (1 - baseFriction - turnFriction);
 
             // BRAKING
-            if (this.input.backward) {
+            if (this.input.backward && !this.isTucking) {
                 this.currentSpeed *= this.brakeForce;
             }
 
-            // Speed limits
-            this.currentSpeed = Math.max(0, Math.min(this.currentSpeed, this.maxSpeed));
+            // Speed limits - higher max when tucking
+            const effectiveMaxSpeed = this.isTucking ? this.maxSpeed * 1.3 : this.maxSpeed;
+            this.currentSpeed = Math.max(0, Math.min(this.currentSpeed, effectiveMaxSpeed));
 
             // Convert speed + direction to velocity
             this.velocity.x = forward.x * this.currentSpeed;
@@ -936,6 +1022,11 @@ export class Skier {
         // Crouch more when turning hard
         targetCrouch += Math.abs(this.edgeAngle) * 0.1;
 
+        // Deep tuck when holding W (speed tuck)
+        if (this.isTucking && this.isGrounded) {
+            targetCrouch += 0.6; // Very low tuck position
+        }
+
         // Tuck position when airborne (if not flipping)
         if (!this.isGrounded && !this.isFlipping) {
             targetCrouch += 0.3;
@@ -947,16 +1038,213 @@ export class Skier {
         }
 
         // Smoothly interpolate torso bend
-        torso.rotation.x = THREE.MathUtils.lerp(torso.rotation.x, targetCrouch, 0.1);
+        torso.rotation.x = THREE.MathUtils.lerp(torso.rotation.x, targetCrouch, 0.15);
 
         // Add subtle side-to-side movement when turning
         const targetSideLean = this.edgeAngle * 0.15;
         torso.rotation.z = THREE.MathUtils.lerp(torso.rotation.z || 0, targetSideLean, 0.1);
 
+        // Animate head - duck down when tucking
+        const isTuckingGrounded = this.isTucking && this.isGrounded;
+
+        // Head position targets
+        let targetHeadY = 1.52;
+        let targetHeadZ = 0.05;
+        let targetHeadRotX = 0;
+
+        if (isTuckingGrounded) {
+            targetHeadY = 1.15; // Lower head
+            targetHeadZ = 0.25; // Move head forward
+            targetHeadRotX = 0.4; // Tilt head down
+        } else if (this.isFlipping) {
+            targetHeadY = 1.3;
+            targetHeadZ = 0.15;
+            targetHeadRotX = 0.3;
+        }
+
+        if (this.bodyParts.head) {
+            const head = this.bodyParts.head;
+            head.position.y = THREE.MathUtils.lerp(head.position.y, targetHeadY, 0.15);
+            head.position.z = THREE.MathUtils.lerp(head.position.z, targetHeadZ, 0.15);
+            head.rotation.x = THREE.MathUtils.lerp(head.rotation.x || 0, targetHeadRotX, 0.15);
+        }
+
+        // Animate helmet to follow head
+        if (this.bodyParts.helmet) {
+            const helmet = this.bodyParts.helmet;
+            const targetHelmetY = targetHeadY + 0.04;
+            const targetHelmetZ = targetHeadZ - 0.03;
+            helmet.position.y = THREE.MathUtils.lerp(helmet.position.y, targetHelmetY, 0.15);
+            helmet.position.z = THREE.MathUtils.lerp(helmet.position.z, targetHelmetZ, 0.15);
+            helmet.rotation.x = THREE.MathUtils.lerp(helmet.rotation.x, -0.1 + targetHeadRotX, 0.15);
+        }
+
+        // Animate goggles to follow head
+        if (this.bodyParts.goggles) {
+            const goggles = this.bodyParts.goggles;
+            const targetGogglesY = targetHeadY;
+            const targetGogglesZ = targetHeadZ + 0.11;
+            goggles.position.y = THREE.MathUtils.lerp(goggles.position.y, targetGogglesY, 0.15);
+            goggles.position.z = THREE.MathUtils.lerp(goggles.position.z, targetGogglesZ, 0.15);
+        }
+
+        // Animate goggle strap to follow head
+        if (this.bodyParts.strap) {
+            const strap = this.bodyParts.strap;
+            const targetStrapY = targetHeadY + 0.02;
+            const targetStrapZ = targetHeadZ - 0.03;
+            strap.position.y = THREE.MathUtils.lerp(strap.position.y, targetStrapY, 0.15);
+            strap.position.z = THREE.MathUtils.lerp(strap.position.z, targetStrapZ, 0.15);
+        }
+
+        // Animate arms - natural skiing stance or tuck
+        if (this.bodyParts.leftArm && this.bodyParts.rightArm) {
+            [-1, 1].forEach(side => {
+                const arm = side === -1 ? this.bodyParts.leftArm : this.bodyParts.rightArm;
+
+                // Default natural skiing stance - arms bent, hands forward at waist
+                let targetUpperArmX = side * 0.24;
+                let targetUpperArmY = 0.95;
+                let targetUpperArmZ = 0.05;
+                let targetUpperArmRotX = 0.3;
+                let targetUpperArmRotZ = side * -0.4;
+
+                let targetForearmX = side * 0.32;
+                let targetForearmY = 0.72;
+                let targetForearmZ = 0.22;
+                let targetForearmRotX = 1.1;
+                let targetForearmRotZ = side * -0.15;
+
+                let targetGloveX = side * 0.28;
+                let targetGloveY = 0.58;
+                let targetGloveZ = 0.42;
+
+                // Subtle arm movement when turning
+                if (Math.abs(this.edgeAngle) > 0.1 && this.isGrounded && !isTuckingGrounded) {
+                    // Arms move slightly for balance when turning
+                    const turnOffset = this.edgeAngle * 0.1;
+                    targetUpperArmRotZ += turnOffset;
+                    targetGloveY += Math.abs(this.edgeAngle) * 0.05;
+                }
+
+                if (isTuckingGrounded) {
+                    // Deep tuck - arms pulled in tight, hands together forward
+                    targetUpperArmX = side * 0.18;
+                    targetUpperArmY = 0.7;
+                    targetUpperArmZ = 0.12;
+                    targetUpperArmRotX = 1.3;
+                    targetUpperArmRotZ = side * -0.2;
+
+                    targetForearmX = side * 0.12;
+                    targetForearmY = 0.5;
+                    targetForearmZ = 0.38;
+                    targetForearmRotX = 1.6;
+                    targetForearmRotZ = side * -0.05;
+
+                    targetGloveX = side * 0.08;
+                    targetGloveY = 0.4;
+                    targetGloveZ = 0.52;
+                }
+
+                // Apply upper arm animation
+                if (arm.upperArm) {
+                    arm.upperArm.position.x = THREE.MathUtils.lerp(arm.upperArm.position.x, targetUpperArmX, 0.12);
+                    arm.upperArm.position.y = THREE.MathUtils.lerp(arm.upperArm.position.y, targetUpperArmY, 0.12);
+                    arm.upperArm.position.z = THREE.MathUtils.lerp(arm.upperArm.position.z, targetUpperArmZ, 0.12);
+                    arm.upperArm.rotation.x = THREE.MathUtils.lerp(arm.upperArm.rotation.x, targetUpperArmRotX, 0.12);
+                    arm.upperArm.rotation.z = THREE.MathUtils.lerp(arm.upperArm.rotation.z, targetUpperArmRotZ, 0.12);
+                }
+
+                // Apply forearm animation
+                if (arm.forearm) {
+                    arm.forearm.position.x = THREE.MathUtils.lerp(arm.forearm.position.x, targetForearmX, 0.12);
+                    arm.forearm.position.y = THREE.MathUtils.lerp(arm.forearm.position.y, targetForearmY, 0.12);
+                    arm.forearm.position.z = THREE.MathUtils.lerp(arm.forearm.position.z, targetForearmZ, 0.12);
+                    arm.forearm.rotation.x = THREE.MathUtils.lerp(arm.forearm.rotation.x, targetForearmRotX, 0.12);
+                    arm.forearm.rotation.z = THREE.MathUtils.lerp(arm.forearm.rotation.z, targetForearmRotZ, 0.12);
+                }
+
+                // Apply glove animation
+                if (arm.glove) {
+                    arm.glove.position.x = THREE.MathUtils.lerp(arm.glove.position.x, targetGloveX, 0.12);
+                    arm.glove.position.y = THREE.MathUtils.lerp(arm.glove.position.y, targetGloveY, 0.12);
+                    arm.glove.position.z = THREE.MathUtils.lerp(arm.glove.position.z, targetGloveZ, 0.12);
+                }
+
+                // Animate pole to follow hand
+                const pole = side === -1 ? this.bodyParts.leftPole : this.bodyParts.rightPole;
+                if (pole) {
+                    // Pole position follows glove
+                    pole.position.x = THREE.MathUtils.lerp(pole.position.x, targetGloveX, 0.12);
+                    pole.position.y = THREE.MathUtils.lerp(pole.position.y, targetGloveY, 0.12);
+                    pole.position.z = THREE.MathUtils.lerp(pole.position.z, targetGloveZ, 0.12);
+
+                    // Pole rotation - normal stance has poles angled back, tuck has them horizontal
+                    let targetPoleRotX = -0.2; // Slight backward angle in normal stance
+                    let targetPoleRotY = side * 0.3; // Angled outward
+                    let targetPoleRotZ = side * 0.15;
+
+                    if (isTuckingGrounded) {
+                        // Poles tucked under arms, more horizontal and parallel
+                        targetPoleRotX = 0.9;
+                        targetPoleRotY = side * 0.1;
+                        targetPoleRotZ = side * 0.4;
+                    }
+
+                    pole.rotation.x = THREE.MathUtils.lerp(pole.rotation.x || 0, targetPoleRotX, 0.12);
+                    pole.rotation.y = THREE.MathUtils.lerp(pole.rotation.y || 0, targetPoleRotY, 0.12);
+                    pole.rotation.z = THREE.MathUtils.lerp(pole.rotation.z || 0, targetPoleRotZ, 0.12);
+                }
+            });
+        }
+
+        // Animate legs - bend more when tucking
+        if (this.bodyParts.leftThigh && this.bodyParts.rightThigh) {
+            let targetThighRotX = 0.8; // Normal skiing stance
+            let targetThighY = 0.62;
+            let targetThighZ = 0.08;
+
+            if (this.isTucking && this.isGrounded) {
+                targetThighRotX = 1.4; // Much more bent
+                targetThighY = 0.45; // Lower
+                targetThighZ = 0.2; // More forward
+            } else if (this.isFlipping) {
+                targetThighRotX = 1.2;
+                targetThighY = 0.5;
+            }
+
+            [this.bodyParts.leftThigh, this.bodyParts.rightThigh].forEach(thigh => {
+                thigh.rotation.x = THREE.MathUtils.lerp(thigh.rotation.x, targetThighRotX, 0.15);
+                thigh.position.y = THREE.MathUtils.lerp(thigh.position.y, targetThighY, 0.15);
+                thigh.position.z = THREE.MathUtils.lerp(thigh.position.z, targetThighZ, 0.15);
+            });
+        }
+
+        // Animate shins
+        if (this.bodyParts.leftShin && this.bodyParts.rightShin) {
+            let targetShinRotX = 0.15; // Normal stance
+            let targetShinY = 0.32;
+            let targetShinZ = 0.18;
+
+            if (this.isTucking && this.isGrounded) {
+                targetShinRotX = -0.3; // Angled back
+                targetShinY = 0.22; // Lower
+                targetShinZ = 0.3; // More forward
+            }
+
+            [this.bodyParts.leftShin, this.bodyParts.rightShin].forEach(shin => {
+                shin.rotation.x = THREE.MathUtils.lerp(shin.rotation.x, targetShinRotX, 0.15);
+                shin.position.y = THREE.MathUtils.lerp(shin.position.y, targetShinY, 0.15);
+                shin.position.z = THREE.MathUtils.lerp(shin.position.z, targetShinZ, 0.15);
+            });
+        }
+
         // Subtle bobbing motion based on speed
-        if (this.isGrounded && this.currentSpeed > 2) {
+        if (this.isGrounded && this.currentSpeed > 2 && !this.isTucking) {
             const bob = Math.sin(performance.now() * 0.01 * speedFactor) * 0.02 * speedFactor;
             torso.position.y = 1.05 + bob;
+        } else if (this.isTucking) {
+            torso.position.y = THREE.MathUtils.lerp(torso.position.y, 0.85, 0.15); // Lower torso when tucking
         }
     }
 
