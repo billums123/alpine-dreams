@@ -70,90 +70,196 @@ export class Skier {
         const skier = new THREE.Group();
         skier.name = 'skier';
 
-        // Body (torso)
-        const bodyGeometry = new THREE.CapsuleGeometry(0.25, 0.6, 4, 8);
-        const bodyMaterial = new THREE.MeshStandardMaterial({
-            color: 0x2196f3,
-            roughness: 0.6,
-            flatShading: true
+        // Materials
+        const jacketMaterial = new THREE.MeshStandardMaterial({
+            color: 0x1565c0, // Blue jacket
+            roughness: 0.7
         });
-        const body = new THREE.Mesh(bodyGeometry, bodyMaterial);
-        body.position.y = 1.0;
-        body.rotation.x = 0.2; // Slight forward lean
-        skier.add(body);
-
-        // Head
-        const headGeometry = new THREE.SphereGeometry(0.2, 8, 6);
-        const headMaterial = new THREE.MeshStandardMaterial({
-            color: 0xffdbac,
+        const pantsMaterial = new THREE.MeshStandardMaterial({
+            color: 0x212121, // Dark pants
             roughness: 0.8
         });
-        const head = new THREE.Mesh(headGeometry, headMaterial);
-        head.position.y = 1.55;
+        const skinMaterial = new THREE.MeshStandardMaterial({
+            color: 0xffcc99,
+            roughness: 0.9
+        });
+        const helmetMaterial = new THREE.MeshStandardMaterial({
+            color: 0xd32f2f, // Red helmet
+            roughness: 0.4,
+            metalness: 0.1
+        });
+        const gogglesMaterial = new THREE.MeshStandardMaterial({
+            color: 0x1a1a1a,
+            roughness: 0.1,
+            metalness: 0.8
+        });
+        const bootMaterial = new THREE.MeshStandardMaterial({
+            color: 0x37474f,
+            roughness: 0.5,
+            metalness: 0.3
+        });
+        const skiMaterial = new THREE.MeshStandardMaterial({
+            color: 0xf4511e,
+            roughness: 0.3,
+            metalness: 0.4
+        });
+        const poleMaterial = new THREE.MeshStandardMaterial({
+            color: 0x263238,
+            roughness: 0.3,
+            metalness: 0.7
+        });
+        const gloveMaterial = new THREE.MeshStandardMaterial({
+            color: 0x1a1a1a,
+            roughness: 0.8
+        });
+
+        // Torso (jacket)
+        const torsoGeometry = new THREE.CapsuleGeometry(0.22, 0.45, 8, 12);
+        const torso = new THREE.Mesh(torsoGeometry, jacketMaterial);
+        torso.position.set(0, 1.05, 0);
+        torso.rotation.x = 0.25;
+        skier.add(torso);
+
+        // Head
+        const headGeometry = new THREE.SphereGeometry(0.16, 12, 10);
+        const head = new THREE.Mesh(headGeometry, skinMaterial);
+        head.position.set(0, 1.52, 0.05);
         skier.add(head);
 
         // Helmet
-        const helmetGeometry = new THREE.SphereGeometry(0.22, 8, 6);
-        const helmetMaterial = new THREE.MeshStandardMaterial({
-            color: 0xe53935,
-            roughness: 0.5
-        });
+        const helmetGeometry = new THREE.SphereGeometry(0.19, 12, 10, 0, Math.PI * 2, 0, Math.PI * 0.6);
         const helmet = new THREE.Mesh(helmetGeometry, helmetMaterial);
-        helmet.position.y = 1.6;
-        helmet.scale.y = 0.9;
+        helmet.position.set(0, 1.56, 0.02);
+        helmet.rotation.x = -0.1;
         skier.add(helmet);
 
-        // Legs
-        const legMaterial = new THREE.MeshStandardMaterial({
-            color: 0x1a1a1a,
-            roughness: 0.7
+        // Goggles
+        const gogglesGeometry = new THREE.BoxGeometry(0.28, 0.08, 0.06);
+        const goggles = new THREE.Mesh(gogglesGeometry, gogglesMaterial);
+        goggles.position.set(0, 1.52, 0.16);
+        skier.add(goggles);
+
+        // Goggle strap
+        const strapGeometry = new THREE.TorusGeometry(0.17, 0.015, 6, 16, Math.PI);
+        const strap = new THREE.Mesh(strapGeometry, gogglesMaterial);
+        strap.position.set(0, 1.54, 0.02);
+        strap.rotation.x = Math.PI / 2;
+        strap.rotation.z = Math.PI;
+        skier.add(strap);
+
+        // Upper legs (thighs)
+        [-0.12, 0.12].forEach(x => {
+            const thighGeometry = new THREE.CapsuleGeometry(0.09, 0.25, 6, 8);
+            const thigh = new THREE.Mesh(thighGeometry, pantsMaterial);
+            thigh.position.set(x, 0.62, 0.08);
+            thigh.rotation.x = 0.8;
+            skier.add(thigh);
         });
+
+        // Lower legs (shins)
+        [-0.14, 0.14].forEach(x => {
+            const shinGeometry = new THREE.CapsuleGeometry(0.07, 0.22, 6, 8);
+            const shin = new THREE.Mesh(shinGeometry, pantsMaterial);
+            shin.position.set(x, 0.32, 0.18);
+            shin.rotation.x = 0.15;
+            skier.add(shin);
+        });
+
+        // Ski boots
         [-0.15, 0.15].forEach(x => {
-            const legGeometry = new THREE.CapsuleGeometry(0.1, 0.5, 4, 8);
-            const leg = new THREE.Mesh(legGeometry, legMaterial);
-            leg.position.set(x, 0.4, 0.05);
-            leg.rotation.x = 0.3;
-            skier.add(leg);
+            const bootGeometry = new THREE.BoxGeometry(0.12, 0.14, 0.28);
+            const boot = new THREE.Mesh(bootGeometry, bootMaterial);
+            boot.position.set(x, 0.1, 0.22);
+            skier.add(boot);
+        });
+
+        // Arms (upper)
+        [-0.32, 0.32].forEach(x => {
+            const upperArmGeometry = new THREE.CapsuleGeometry(0.06, 0.2, 6, 8);
+            const upperArm = new THREE.Mesh(upperArmGeometry, jacketMaterial);
+            upperArm.position.set(x, 1.1, 0);
+            upperArm.rotation.z = x > 0 ? -0.5 : 0.5;
+            upperArm.rotation.x = 0.4;
+            skier.add(upperArm);
+        });
+
+        // Arms (lower/forearms)
+        [-0.42, 0.42].forEach(x => {
+            const forearmGeometry = new THREE.CapsuleGeometry(0.05, 0.18, 6, 8);
+            const forearm = new THREE.Mesh(forearmGeometry, jacketMaterial);
+            forearm.position.set(x, 0.9, 0.15);
+            forearm.rotation.z = x > 0 ? -0.3 : 0.3;
+            forearm.rotation.x = 0.8;
+            skier.add(forearm);
+        });
+
+        // Gloves/hands
+        [-0.48, 0.48].forEach(x => {
+            const gloveGeometry = new THREE.SphereGeometry(0.055, 8, 6);
+            const glove = new THREE.Mesh(gloveGeometry, gloveMaterial);
+            glove.position.set(x, 0.72, 0.28);
+            skier.add(glove);
         });
 
         // Skis
-        const skiMaterial = new THREE.MeshStandardMaterial({
-            color: 0xff5722,
-            roughness: 0.3,
-            metalness: 0.2
-        });
-        [-0.2, 0.2].forEach(x => {
-            const skiGeometry = new THREE.BoxGeometry(0.12, 0.03, 1.8);
+        [-0.15, 0.15].forEach(x => {
+            // Main ski body
+            const skiGeometry = new THREE.BoxGeometry(0.1, 0.02, 1.9);
             const ski = new THREE.Mesh(skiGeometry, skiMaterial);
-            ski.position.set(x, 0.02, 0.2);
+            ski.position.set(x, 0.015, 0.25);
             skier.add(ski);
 
-            // Ski tips (curved up)
-            const tipGeometry = new THREE.BoxGeometry(0.12, 0.03, 0.15);
+            // Ski tip (curved up)
+            const tipGeometry = new THREE.BoxGeometry(0.1, 0.02, 0.2);
             const tip = new THREE.Mesh(tipGeometry, skiMaterial);
-            tip.position.set(x, 0.06, 1.05);
-            tip.rotation.x = -0.4;
+            tip.position.set(x, 0.04, 1.15);
+            tip.rotation.x = -0.5;
             skier.add(tip);
+
+            // Ski tail (slightly curved up)
+            const tailGeometry = new THREE.BoxGeometry(0.1, 0.02, 0.12);
+            const tail = new THREE.Mesh(tailGeometry, skiMaterial);
+            tail.position.set(x, 0.03, -0.72);
+            tail.rotation.x = 0.3;
+            skier.add(tail);
+
+            // Binding
+            const bindingGeometry = new THREE.BoxGeometry(0.08, 0.06, 0.18);
+            const binding = new THREE.Mesh(bindingGeometry, bootMaterial);
+            binding.position.set(x, 0.05, 0.22);
+            skier.add(binding);
         });
 
         // Poles
-        const poleMaterial = new THREE.MeshStandardMaterial({
-            color: 0x333333,
-            metalness: 0.5
-        });
-        [-0.4, 0.4].forEach((x, i) => {
-            const poleGeometry = new THREE.CylinderGeometry(0.015, 0.015, 1.2, 6);
-            const pole = new THREE.Mesh(poleGeometry, poleMaterial);
-            pole.position.set(x, 0.7, -0.1);
-            pole.rotation.x = 0.3;
-            pole.rotation.z = x > 0 ? -0.2 : 0.2;
-            skier.add(pole);
+        [-0.52, 0.52].forEach(x => {
+            // Pole shaft
+            const shaftGeometry = new THREE.CylinderGeometry(0.012, 0.012, 1.1, 8);
+            const shaft = new THREE.Mesh(shaftGeometry, poleMaterial);
+            shaft.position.set(x, 0.35, 0.1);
+            shaft.rotation.x = 0.6;
+            shaft.rotation.z = x > 0 ? -0.15 : 0.15;
+            skier.add(shaft);
+
+            // Pole basket
+            const basketGeometry = new THREE.CylinderGeometry(0.06, 0.06, 0.01, 8);
+            const basket = new THREE.Mesh(basketGeometry, poleMaterial);
+            basket.position.set(x * 0.9, -0.1, -0.35);
+            basket.rotation.x = 0.6;
+            skier.add(basket);
+
+            // Pole grip
+            const gripGeometry = new THREE.CylinderGeometry(0.025, 0.02, 0.12, 8);
+            const grip = new THREE.Mesh(gripGeometry, gloveMaterial);
+            grip.position.set(x, 0.78, 0.52);
+            grip.rotation.x = 0.6;
+            skier.add(grip);
         });
 
         skier.castShadow = true;
         skier.traverse(child => {
             if (child.isMesh) {
                 child.castShadow = true;
+                child.receiveShadow = true;
             }
         });
 
@@ -175,8 +281,10 @@ export class Skier {
         this.mesh.position.copy(this.position);
 
         // Calculate initial facing direction (downhill)
+        // The normal's x,z point in the downhill direction
         const normal = this.mountain.getNormalAt(x, z);
-        this.rotation = Math.atan2(-normal.x, -normal.z);
+        // Face the direction the slope goes down (same as slope direction in physics)
+        this.rotation = Math.atan2(normal.x, normal.z);
         this.mesh.rotation.y = this.rotation;
 
         // Reset physics
@@ -250,6 +358,7 @@ export class Skier {
     }
 
     onKeyDown(e) {
+        let handled = true;
         switch (e.code) {
             case 'KeyW':
             case 'ArrowUp':
@@ -275,10 +384,16 @@ export class Skier {
             case 'Escape':
                 this.remove();
                 break;
+            default:
+                handled = false;
+        }
+        if (handled) {
+            e.preventDefault();
         }
     }
 
     onKeyUp(e) {
+        let handled = true;
         switch (e.code) {
             case 'KeyW':
             case 'ArrowUp':
@@ -299,6 +414,11 @@ export class Skier {
             case 'Space':
                 this.input.jump = false;
                 break;
+            default:
+                handled = false;
+        }
+        if (handled) {
+            e.preventDefault();
         }
     }
 
@@ -332,26 +452,28 @@ export class Skier {
             Math.cos(this.rotation)
         );
 
-        // Handle turning with edge control
+        // Handle turning with edge control - carving style
         let turnAmount = 0;
+        const targetEdge = this.input.left ? -0.7 : (this.input.right ? 0.7 : 0);
+        const edgeLerpSpeed = targetEdge !== 0 ? 0.08 : 0.12;
+        this.edgeAngle = THREE.MathUtils.lerp(this.edgeAngle, targetEdge, edgeLerpSpeed);
+
         if (this.input.left) {
             turnAmount = 1;
-            this.edgeAngle = THREE.MathUtils.lerp(this.edgeAngle, -0.5, 0.12);
         } else if (this.input.right) {
             turnAmount = -1;
-            this.edgeAngle = THREE.MathUtils.lerp(this.edgeAngle, 0.5, 0.12);
-        } else {
-            this.edgeAngle = THREE.MathUtils.lerp(this.edgeAngle, 0, 0.15);
         }
 
-        // Turn rate depends on speed (harder to turn at low speed)
-        const speedFactor = Math.min(1, this.currentSpeed / 8);
-        this.rotation += turnAmount * this.turnSpeed * speedFactor * delta;
+        // Carving turn rate - faster at higher speeds, smoother feel
+        const speedFactor = Math.min(1, this.currentSpeed / 12);
+        const carvingIntensity = Math.abs(this.edgeAngle) * speedFactor;
+
+        // Apply rotation based on edge angle (like real carving)
+        this.rotation += turnAmount * this.turnSpeed * carvingIntensity * delta;
 
         // Gravity along slope
         if (this.isGrounded) {
             // Calculate gravity force based on slope steepness
-            // steeper slope = more gravity force
             const slopeMagnitude = Math.sqrt(terrainNormal.x * terrainNormal.x + terrainNormal.z * terrainNormal.z);
             const gravityForce = this.gravity * slopeMagnitude;
 
@@ -359,24 +481,38 @@ export class Skier {
             this.velocity.x += slopeDir.x * gravityForce * delta;
             this.velocity.z += slopeDir.z * gravityForce * delta;
 
-            // Edge carving force (perpendicular to forward direction)
-            // This creates the turning force when carving
-            if (Math.abs(this.edgeAngle) > 0.05 && this.currentSpeed > 1) {
-                const perpendicular = new THREE.Vector3(-forward.z, 0, forward.x);
-                const edgeForce = this.edgeAngle * this.edgingForce * speedFactor;
-                this.velocity.x += perpendicular.x * edgeForce * delta;
-                this.velocity.z += perpendicular.z * edgeForce * delta;
+            // CARVING PHYSICS: Redirect velocity toward facing direction
+            // This is the key to making it feel like carving - the skis grip and redirect momentum
+            if (this.currentSpeed > 0.5) {
+                const currentVelDir = this.velocity.clone().normalize();
+                const facingDotVel = forward.dot(currentVelDir);
+
+                // Calculate how much to redirect velocity toward facing direction
+                // More edge angle = more grip = more redirection
+                const gripStrength = Math.abs(this.edgeAngle) * 0.15 * speedFactor;
+
+                // Blend current velocity direction toward facing direction
+                const newVelDir = new THREE.Vector3(
+                    currentVelDir.x + (forward.x - currentVelDir.x) * gripStrength,
+                    0,
+                    currentVelDir.z + (forward.z - currentVelDir.z) * gripStrength
+                ).normalize();
+
+                // Apply redirected velocity while preserving speed (with slight loss from carving)
+                const speedLoss = 1 - (Math.abs(this.edgeAngle) * 0.02);
+                this.velocity.x = newVelDir.x * this.currentSpeed * speedLoss;
+                this.velocity.z = newVelDir.z * this.currentSpeed * speedLoss;
             }
 
             // Forward/backward control
             if (this.input.forward) {
-                // Tuck position - reduce drag, slight push in current direction
+                // Tuck position - reduce drag, accelerate slightly
                 const moveDir = this.velocity.lengthSq() > 0.1 ? this.velocity.clone().normalize() : forward;
-                this.velocity.x += moveDir.x * this.acceleration * 0.3 * delta;
-                this.velocity.z += moveDir.z * this.acceleration * 0.3 * delta;
+                this.velocity.x += moveDir.x * this.acceleration * 0.4 * delta;
+                this.velocity.z += moveDir.z * this.acceleration * 0.4 * delta;
             }
             if (this.input.backward) {
-                // Snow plow - braking
+                // Snow plow - braking / slowing down
                 if (this.currentSpeed > 0.5) {
                     const brakeDir = this.velocity.clone().normalize();
                     this.velocity.x -= brakeDir.x * this.brakeForce * delta;
@@ -386,7 +522,7 @@ export class Skier {
                 }
             }
 
-            // Friction (higher when edging hard)
+            // Friction - less friction when going straight, more when carving hard
             const frictionMultiplier = 1 + Math.abs(this.edgeAngle) * 3;
             const frictionForce = this.friction * frictionMultiplier;
             this.velocity.x *= (1 - frictionForce);
@@ -505,7 +641,7 @@ export class Skier {
     }
 
     updateCamera(delta) {
-        // Calculate desired camera position
+        // Calculate desired camera position behind skier
         const backDir = new THREE.Vector3(
             -Math.sin(this.rotation),
             0,
@@ -513,18 +649,31 @@ export class Skier {
         );
 
         // Camera behind and above skier
-        const targetCameraPos = this.position.clone()
+        let targetCameraPos = this.position.clone()
             .add(backDir.multiplyScalar(this.cameraOffset.z))
             .add(new THREE.Vector3(0, this.cameraOffset.y, 0));
+
+        // Ensure camera doesn't go below terrain
+        const terrainHeightAtCamera = this.mountain.getHeightAt(targetCameraPos.x, targetCameraPos.z);
+        const minCameraHeight = terrainHeightAtCamera + 2.0; // Keep at least 2 units above terrain
+        if (targetCameraPos.y < minCameraHeight) {
+            targetCameraPos.y = minCameraHeight;
+        }
+
+        // Also ensure camera is always above skier
+        const minAboveSkier = this.position.y + 1.5;
+        if (targetCameraPos.y < minAboveSkier) {
+            targetCameraPos.y = minAboveSkier;
+        }
 
         // Smooth camera movement
         this.camera.position.lerp(targetCameraPos, this.cameraSmoothness);
 
-        // Look ahead of skier
+        // Look at skier (slightly ahead)
         const lookTarget = this.position.clone().add(
             new THREE.Vector3(
                 Math.sin(this.rotation) * this.cameraLookAhead,
-                1.5,
+                1.0,
                 Math.cos(this.rotation) * this.cameraLookAhead
             )
         );
