@@ -575,48 +575,49 @@ export class ObjectPlacer {
     generateTrickPark() {
         this.clearAll();
 
+        console.log('Generating trick park...');
+
         // Create a series of jumps going down the mountain
-        // Main run - center of mountain
+        // Place jumps on the actual mountain slopes (centered area)
         const mainRunJumps = [];
-        for (let i = 0; i < 12; i++) {
-            const z = -120 + i * 25; // Spread down the mountain
-            const x = Math.sin(i * 0.5) * 30; // Slight weave
-            mainRunJumps.push({ x, z, rot: 0, size: 1 + Math.random() * 0.5 });
+        for (let i = 0; i < 10; i++) {
+            const z = -150 + i * 35; // Spread from back to front of mountain
+            const x = Math.sin(i * 0.6) * 40; // Slight weave
+            mainRunJumps.push({ x, z, rot: 0, size: 1.2 + Math.random() * 0.5 });
         }
 
-        // Left run
+        // Left run - on left slope
         const leftRunJumps = [];
-        for (let i = 0; i < 8; i++) {
-            const z = -100 + i * 30;
-            const x = -80 + Math.sin(i * 0.7) * 20;
-            leftRunJumps.push({ x, z, rot: 0.3, size: 0.8 + Math.random() * 0.4 });
+        for (let i = 0; i < 6; i++) {
+            const z = -120 + i * 40;
+            const x = -60 - Math.sin(i * 0.5) * 30;
+            leftRunJumps.push({ x, z, rot: 0.4, size: 1.0 + Math.random() * 0.4 });
         }
 
-        // Right run
+        // Right run - on right slope
         const rightRunJumps = [];
-        for (let i = 0; i < 8; i++) {
-            const z = -100 + i * 30;
-            const x = 80 + Math.sin(i * 0.6) * 15;
-            rightRunJumps.push({ x, z, rot: -0.2, size: 0.8 + Math.random() * 0.4 });
+        for (let i = 0; i < 6; i++) {
+            const z = -120 + i * 40;
+            const x = 60 + Math.sin(i * 0.5) * 30;
+            rightRunJumps.push({ x, z, rot: -0.4, size: 1.0 + Math.random() * 0.4 });
         }
 
-        // Big air jumps (larger, spaced out)
+        // Big air jumps (larger, on steeper sections)
         const bigAirJumps = [
-            { x: 0, z: -80, rot: 0, size: 1.5 },
-            { x: -50, z: -30, rot: 0.2, size: 1.4 },
-            { x: 50, z: 0, rot: -0.15, size: 1.4 },
-            { x: 0, z: 50, rot: 0, size: 1.6 },
+            { x: 0, z: -100, rot: 0, size: 1.8 },
+            { x: -40, z: -50, rot: 0.3, size: 1.6 },
+            { x: 40, z: -20, rot: -0.3, size: 1.6 },
+            { x: 0, z: 30, rot: 0, size: 1.8 },
         ];
 
         const allJumps = [...mainRunJumps, ...leftRunJumps, ...rightRunJumps, ...bigAirJumps];
+        let placedCount = 0;
 
         allJumps.forEach(pos => {
             const jump = this.decorations.createJump();
             const height = this.mountain.getHeightAt(pos.x, pos.z);
 
-            // Skip if too low (flat area)
-            if (height < 2) return;
-
+            // Place jump at terrain height (no minimum height filter)
             jump.position.set(pos.x, height, pos.z);
 
             // Scale the jump

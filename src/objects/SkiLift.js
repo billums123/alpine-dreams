@@ -36,44 +36,60 @@ export class SkiLift {
         });
     }
 
-    createTower(height = 6) {
+    createTower(height = 8) {
         const tower = new THREE.Group();
         tower.name = 'liftTower';
 
         // Main pole
-        const poleGeometry = new THREE.CylinderGeometry(0.15, 0.2, height, 6);
+        const poleGeometry = new THREE.CylinderGeometry(0.18, 0.25, height, 8);
         const pole = new THREE.Mesh(poleGeometry, this.metalMaterial);
         pole.position.y = height / 2;
         pole.castShadow = true;
         tower.add(pole);
 
-        // Cross beam at top
-        const beamGeometry = new THREE.BoxGeometry(2, 0.2, 0.2);
+        // Cross beam at top - perpendicular to cable direction
+        const beamGeometry = new THREE.BoxGeometry(2.5, 0.25, 0.25);
         const beam = new THREE.Mesh(beamGeometry, this.metalMaterial);
-        beam.position.y = height - 0.1;
+        beam.position.y = height;
         beam.castShadow = true;
         tower.add(beam);
 
-        // Wheel housings
-        [-0.7, 0.7].forEach(x => {
+        // Cable guide wheels on each side
+        [-0.9, 0.9].forEach(x => {
+            // Wheel housing
             const housing = new THREE.Mesh(
-                new THREE.CylinderGeometry(0.25, 0.25, 0.3, 8),
+                new THREE.CylinderGeometry(0.3, 0.3, 0.2, 12),
                 this.metalMaterial
             );
-            housing.position.set(x, height - 0.1, 0);
-            housing.rotation.x = Math.PI / 2;
+            housing.position.set(x, height, 0);
+            housing.rotation.z = Math.PI / 2;
             tower.add(housing);
+
+            // Inner wheel (visible)
+            const wheel = new THREE.Mesh(
+                new THREE.TorusGeometry(0.2, 0.05, 8, 16),
+                this.cableMaterial
+            );
+            wheel.position.set(x, height, 0);
+            wheel.rotation.y = Math.PI / 2;
+            tower.add(wheel);
         });
 
-        // Support struts
-        const strutGeometry = new THREE.CylinderGeometry(0.05, 0.05, 2, 4);
-        [[-0.8, -0.5], [0.8, -0.5], [-0.8, 0.5], [0.8, 0.5]].forEach(([x, z]) => {
+        // Support struts from pole to beam
+        const strutGeometry = new THREE.CylinderGeometry(0.04, 0.04, 1.8, 6);
+        [[-1, 0], [1, 0]].forEach(([x, z]) => {
             const strut = new THREE.Mesh(strutGeometry, this.metalMaterial);
-            strut.position.set(x * 0.5, height / 2, z * 0.3);
-            strut.rotation.z = x > 0 ? -0.3 : 0.3;
+            strut.position.set(x * 0.6, height - 0.8, z);
+            strut.rotation.z = x > 0 ? -0.4 : 0.4;
             strut.castShadow = true;
             tower.add(strut);
         });
+
+        // Base plate
+        const baseGeometry = new THREE.CylinderGeometry(0.5, 0.6, 0.1, 8);
+        const base = new THREE.Mesh(baseGeometry, this.metalMaterial);
+        base.position.y = 0.05;
+        tower.add(base);
 
         tower.userData.placedObject = true;
         return tower;
@@ -187,15 +203,19 @@ export class SkiLift {
         const lift = new THREE.Group();
         lift.name = isGondola ? 'gondola' : 'skiLift';
         lift.userData.placedObject = true;
+        lift.userData.isGondola = isGondola;
 
         // Calculate lift properties
         const direction = endPoint.clone().sub(startPoint);
         const distance = direction.length();
-        const midPoint = startPoint.clone().add(direction.clone().multiplyScalar(0.5));
+
+        // Get perpendicular direction for cable offset
+        const perpendicular = new THREE.Vector3(-direction.z, 0, direction.x).normalize();
+        const cableOffset = isGondola ? 0.8 : 0.5; // Wider spacing for gondolas
 
         // Tower heights based on terrain
-        const startHeight = 6;
-        const endHeight = 6;
+        const startHeight = 8;
+        const endHeight = 8;
 
         // Create start tower
         const startTower = this.createTower(startHeight);
@@ -209,60 +229,72 @@ export class SkiLift {
         endTower.lookAt(startPoint);
         lift.add(endTower);
 
+        // Collect all tower positions for cable routing
+        const towerData = [
+            { pos: startPoint.clone(), height: startHeight }
+        ];
+
         // Add intermediate towers for long lifts
-        const numIntermediateTowers = Math.floor(distance / 25);
-        const intermediateTowers = [];
+        const numIntermediateTowers = Math.floor(distance / 30);
 
         for (let i = 1; i <= numIntermediateTowers; i++) {
             const t = i / (numIntermediateTowers + 1);
             const pos = startPoint.clone().lerp(endPoint, t);
             pos.y = this.mountain.getHeightAt(pos.x, pos.z);
 
-            const tower = this.createTower(5 + Math.random() * 2);
+            const towerHeight = 6 + Math.random() * 3;
+            const tower = this.createTower(towerHeight);
             tower.position.copy(pos);
             tower.lookAt(endPoint);
             lift.add(tower);
-            intermediateTowers.push(tower);
+
+            towerData.push({ pos: pos.clone(), height: towerHeight });
         }
 
-        // Create cable
-        const cablePoints = this.calculateCablePoints(startPoint, endPoint, startHeight, endHeight, intermediateTowers);
+        towerData.push({ pos: endPoint.clone(), height: endHeight });
+
+        // Create cables that pass through tower tops
+        const cablePoints = this.calculateCablePointsThroughTowers(towerData, perpendicular, cableOffset);
         const cableCurve = new THREE.CatmullRomCurve3(cablePoints);
-        const cableGeometry = new THREE.TubeGeometry(cableCurve, 50, 0.03, 6, false);
+        const cableGeometry = new THREE.TubeGeometry(cableCurve, 64, 0.04, 8, false);
         const cable = new THREE.Mesh(cableGeometry, this.cableMaterial);
         lift.add(cable);
 
-        // Second cable (return line)
-        const returnCablePoints = cablePoints.map(p => p.clone().add(new THREE.Vector3(0, 0, 0.5)));
+        // Return cable on other side
+        const returnCablePoints = this.calculateCablePointsThroughTowers(towerData, perpendicular, -cableOffset);
         const returnCurve = new THREE.CatmullRomCurve3(returnCablePoints);
-        const returnCableGeometry = new THREE.TubeGeometry(returnCurve, 50, 0.03, 6, false);
+        const returnCableGeometry = new THREE.TubeGeometry(returnCurve, 64, 0.04, 8, false);
         const returnCable = new THREE.Mesh(returnCableGeometry, this.cableMaterial);
         lift.add(returnCable);
 
         // Add chairs/gondolas along the cable
-        const numCarriers = Math.floor(distance / 8);
+        // Gondolas: fewer cabins (larger spacing), ski lifts: more chairs
+        const carrierSpacing = isGondola ? 20 : 10;
+        const numCarriers = Math.max(4, Math.floor(distance / carrierSpacing));
         const carriers = [];
 
         for (let i = 0; i < numCarriers; i++) {
             const carrier = isGondola ? this.createGondolaCabin() : this.createChair();
             const t = i / numCarriers;
 
+            // Alternate between going up and going down
+            const isReturn = i % 2 === 1;
+
             // Store animation data
             carrier.userData.curvePosition = t;
             carrier.userData.curve = cableCurve;
-            carrier.userData.isReturn = i % 2 === 1;
+            carrier.userData.isReturn = isReturn;
             carrier.userData.returnCurve = returnCurve;
 
             // Initial position
-            const point = carrier.userData.isReturn
-                ? returnCurve.getPointAt(1 - t)
-                : cableCurve.getPointAt(t);
+            const curve = isReturn ? returnCurve : cableCurve;
+            const actualT = isReturn ? 1 - t : t;
+            const point = curve.getPointAt(Math.max(0.001, Math.min(0.999, actualT)));
             carrier.position.copy(point);
 
             // Orient along cable
-            const tangent = carrier.userData.isReturn
-                ? returnCurve.getTangentAt(1 - t)
-                : cableCurve.getTangentAt(t);
+            const tangent = curve.getTangentAt(Math.max(0.001, Math.min(0.999, actualT)));
+            if (isReturn) tangent.negate();
             carrier.lookAt(carrier.position.clone().add(tangent));
 
             lift.add(carrier);
@@ -270,53 +302,67 @@ export class SkiLift {
         }
 
         // Store carriers for animation
+        // Gondolas move faster than ski lifts
         lift.userData.carriers = carriers;
-        lift.userData.speed = 0.02;
+        lift.userData.speed = isGondola ? 0.025 : 0.015; // Ski lifts at 60% of gondola speed
 
         this.scene.add(lift);
         return lift;
     }
 
-    calculateCablePoints(start, end, startHeight, endHeight, intermediateTowers) {
+    // Calculate cable points that properly pass through each tower top
+    calculateCablePointsThroughTowers(towerData, perpendicular, offset) {
         const points = [];
 
-        // Start point (top of tower)
-        points.push(new THREE.Vector3(start.x, start.y + startHeight, start.z));
+        for (let i = 0; i < towerData.length; i++) {
+            const tower = towerData[i];
+            const towerTop = new THREE.Vector3(
+                tower.pos.x + perpendicular.x * offset,
+                tower.pos.y + tower.height,
+                tower.pos.z + perpendicular.z * offset
+            );
 
-        // Intermediate points with sag
-        const numSegments = 10 + intermediateTowers.length * 5;
-        for (let i = 1; i < numSegments; i++) {
-            const t = i / numSegments;
-            const x = start.x + (end.x - start.x) * t;
-            const z = start.z + (end.z - start.z) * t;
-            const baseY = start.y + startHeight + (end.y + endHeight - start.y - startHeight) * t;
+            // Add point at tower top
+            points.push(towerTop.clone());
 
-            // Add slight sag (catenary approximation)
-            const sagAmount = Math.sin(t * Math.PI) * 1.5;
-            const y = baseY - sagAmount;
-
-            // Check against intermediate towers
-            intermediateTowers.forEach(tower => {
-                const dist = Math.sqrt(
-                    Math.pow(x - tower.position.x, 2) +
-                    Math.pow(z - tower.position.z, 2)
+            // Add sag points between this tower and next (if not last tower)
+            if (i < towerData.length - 1) {
+                const nextTower = towerData[i + 1];
+                const nextTop = new THREE.Vector3(
+                    nextTower.pos.x + perpendicular.x * offset,
+                    nextTower.pos.y + nextTower.height,
+                    nextTower.pos.z + perpendicular.z * offset
                 );
-                if (dist < 3) {
-                    // Near a tower, raise the cable
-                    const towerTop = tower.position.y + 5;
-                    if (y < towerTop) {
-                        // Smoothly raise to tower height
-                    }
-                }
-            });
 
-            points.push(new THREE.Vector3(x, y, z));
+                const segmentDist = towerTop.distanceTo(nextTop);
+                const numSagPoints = Math.max(2, Math.floor(segmentDist / 8));
+
+                for (let j = 1; j <= numSagPoints; j++) {
+                    const t = j / (numSagPoints + 1);
+                    const sagPoint = towerTop.clone().lerp(nextTop, t);
+
+                    // Add catenary sag - maximum in the middle
+                    const sagFactor = Math.sin(t * Math.PI);
+                    const sagAmount = segmentDist * 0.03 * sagFactor; // 3% sag
+                    sagPoint.y -= sagAmount;
+
+                    points.push(sagPoint);
+                }
+            }
         }
 
-        // End point
-        points.push(new THREE.Vector3(end.x, end.y + endHeight, end.z));
-
         return points;
+    }
+
+    // Legacy method for compatibility
+    calculateCablePoints(start, end, startHeight, endHeight, intermediateTowers) {
+        const towerData = [{ pos: start.clone(), height: startHeight }];
+        intermediateTowers.forEach(t => {
+            towerData.push({ pos: t.position.clone(), height: 6 });
+        });
+        towerData.push({ pos: end.clone(), height: endHeight });
+
+        return this.calculateCablePointsThroughTowers(towerData, new THREE.Vector3(0, 0, 1), 0);
     }
 
     // Animate lift carriers
