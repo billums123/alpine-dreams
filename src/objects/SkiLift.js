@@ -99,43 +99,46 @@ export class SkiLift {
         const chair = new THREE.Group();
         chair.name = 'liftChair';
 
-        // Seat base
-        const seatGeometry = new THREE.BoxGeometry(1.8, 0.15, 0.6);
+        // The chair is built so that when the group faces along +Z (travel direction),
+        // passengers sit facing +X (perpendicular to travel, looking outward)
+
+        // Seat base - width along X (perpendicular to travel), depth along Z (travel direction)
+        const seatGeometry = new THREE.BoxGeometry(0.6, 0.15, 1.8);
         const seat = new THREE.Mesh(seatGeometry, this.chairMaterial);
         seat.position.y = -0.5;
         chair.add(seat);
 
-        // Seat back
-        const backGeometry = new THREE.BoxGeometry(1.8, 0.8, 0.1);
+        // Seat back - on the -X side (inner side, away from view)
+        const backGeometry = new THREE.BoxGeometry(0.1, 0.8, 1.8);
         const back = new THREE.Mesh(backGeometry, this.chairMaterial);
-        back.position.set(0, -0.1, -0.25);
+        back.position.set(-0.25, -0.1, 0);
         chair.add(back);
 
-        // Armrests
-        [-0.85, 0.85].forEach(x => {
-            const armGeometry = new THREE.BoxGeometry(0.1, 0.4, 0.5);
+        // Armrests - at each end along Z
+        [-0.85, 0.85].forEach(z => {
+            const armGeometry = new THREE.BoxGeometry(0.5, 0.4, 0.1);
             const arm = new THREE.Mesh(armGeometry, this.chairMaterial);
-            arm.position.set(x, -0.3, 0);
+            arm.position.set(0, -0.3, z);
             chair.add(arm);
         });
 
-        // Safety bar
+        // Safety bar - runs along Z (parallel to cable)
         const barGeometry = new THREE.CylinderGeometry(0.03, 0.03, 1.8, 6);
         const bar = new THREE.Mesh(barGeometry, this.metalMaterial);
-        bar.position.set(0, -0.1, 0.35);
-        bar.rotation.z = Math.PI / 2;
+        bar.position.set(0.35, -0.1, 0);
+        bar.rotation.x = Math.PI / 2;
         chair.add(bar);
 
-        // Hanger (connects to cable)
-        const hangerGeometry = new THREE.CylinderGeometry(0.02, 0.02, 0.8, 4);
+        // Hanger (connects to cable) - vertical rod
+        const hangerGeometry = new THREE.CylinderGeometry(0.03, 0.03, 0.6, 6);
         const hanger = new THREE.Mesh(hangerGeometry, this.metalMaterial);
-        hanger.position.y = 0.4;
+        hanger.position.y = 0.3;
         chair.add(hanger);
 
-        // Cable grip
-        const gripGeometry = new THREE.BoxGeometry(0.15, 0.1, 0.15);
+        // Cable grip - clamps onto the cable
+        const gripGeometry = new THREE.BoxGeometry(0.12, 0.15, 0.25);
         const grip = new THREE.Mesh(gripGeometry, this.metalMaterial);
-        grip.position.y = 0.8;
+        grip.position.y = 0.6;
         chair.add(grip);
 
         chair.castShadow = true;
@@ -208,30 +211,34 @@ export class SkiLift {
         // Calculate lift properties
         const direction = endPoint.clone().sub(startPoint);
         const distance = direction.length();
+        const dirNormalized = direction.clone().normalize();
 
-        // Get perpendicular direction for cable offset
-        const perpendicular = new THREE.Vector3(-direction.z, 0, direction.x).normalize();
-        const cableOffset = isGondola ? 0.8 : 0.5; // Wider spacing for gondolas
+        // Get horizontal perpendicular direction for cable offset (in XZ plane)
+        // This keeps cables at consistent horizontal offset regardless of slope
+        const horizontalDir = new THREE.Vector3(direction.x, 0, direction.z).normalize();
+        const perpendicular = new THREE.Vector3(-horizontalDir.z, 0, horizontalDir.x);
+        const cableOffset = isGondola ? 0.9 : 0.9; // Match tower wheel positions at ±0.9
 
         // Tower heights based on terrain
         const startHeight = 8;
         const endHeight = 8;
 
-        // Create start tower
+        // Create start tower - rotate only around Y axis to face the lift direction
         const startTower = this.createTower(startHeight);
         startTower.position.copy(startPoint);
-        startTower.lookAt(endPoint);
+        const startAngle = Math.atan2(direction.x, direction.z);
+        startTower.rotation.y = startAngle;
         lift.add(startTower);
 
-        // Create end tower
+        // Create end tower - face back toward start
         const endTower = this.createTower(endHeight);
         endTower.position.copy(endPoint);
-        endTower.lookAt(startPoint);
+        endTower.rotation.y = startAngle + Math.PI;
         lift.add(endTower);
 
-        // Collect all tower positions for cable routing
+        // Collect all tower positions and angles for cable routing
         const towerData = [
-            { pos: startPoint.clone(), height: startHeight }
+            { pos: startPoint.clone(), height: startHeight, angle: startAngle }
         ];
 
         // Add intermediate towers for long lifts
@@ -245,15 +252,15 @@ export class SkiLift {
             const towerHeight = 6 + Math.random() * 3;
             const tower = this.createTower(towerHeight);
             tower.position.copy(pos);
-            tower.lookAt(endPoint);
+            tower.rotation.y = startAngle;
             lift.add(tower);
 
-            towerData.push({ pos: pos.clone(), height: towerHeight });
+            towerData.push({ pos: pos.clone(), height: towerHeight, angle: startAngle });
         }
 
-        towerData.push({ pos: endPoint.clone(), height: endHeight });
+        towerData.push({ pos: endPoint.clone(), height: endHeight, angle: startAngle + Math.PI });
 
-        // Create cables that pass through tower tops
+        // Create cables that pass through tower wheel positions
         const cablePoints = this.calculateCablePointsThroughTowers(towerData, perpendicular, cableOffset);
         const cableCurve = new THREE.CatmullRomCurve3(cablePoints);
         const cableGeometry = new THREE.TubeGeometry(cableCurve, 64, 0.04, 8, false);
@@ -273,6 +280,9 @@ export class SkiLift {
         const numCarriers = Math.max(4, Math.floor(distance / carrierSpacing));
         const carriers = [];
 
+        // Grip height offset - the grip is above the carrier origin
+        const gripHeight = isGondola ? 1.15 : 0.6;
+
         for (let i = 0; i < numCarriers; i++) {
             const carrier = isGondola ? this.createGondolaCabin() : this.createChair();
             const t = i / numCarriers;
@@ -285,17 +295,24 @@ export class SkiLift {
             carrier.userData.curve = cableCurve;
             carrier.userData.isReturn = isReturn;
             carrier.userData.returnCurve = returnCurve;
+            carrier.userData.gripHeight = gripHeight;
 
-            // Initial position
+            // Initial position - get point on cable, then offset down by grip height
             const curve = isReturn ? returnCurve : cableCurve;
             const actualT = isReturn ? 1 - t : t;
-            const point = curve.getPointAt(Math.max(0.001, Math.min(0.999, actualT)));
-            carrier.position.copy(point);
+            const cablePoint = curve.getPointAt(Math.max(0.001, Math.min(0.999, actualT)));
 
-            // Orient along cable
+            // Position carrier so grip is at cable level
+            carrier.position.copy(cablePoint);
+            carrier.position.y -= gripHeight;
+
+            // Orient along cable direction
             const tangent = curve.getTangentAt(Math.max(0.001, Math.min(0.999, actualT)));
             if (isReturn) tangent.negate();
-            carrier.lookAt(carrier.position.clone().add(tangent));
+
+            // Calculate Y rotation to face along cable (only rotate around Y to stay upright)
+            const angle = Math.atan2(tangent.x, tangent.z);
+            carrier.rotation.set(0, angle, 0);
 
             lift.add(carrier);
             carriers.push(carrier);
@@ -385,17 +402,21 @@ export class SkiLift {
 
             if (curve) {
                 const actualT = carrier.userData.isReturn ? 1 - t : t;
-                const point = curve.getPointAt(actualT);
-                carrier.position.copy(point);
+                const clampedT = Math.max(0.001, Math.min(0.999, actualT));
 
-                // Orient along curve
-                const tangent = curve.getTangentAt(actualT);
+                // Get cable point and position carrier below it
+                const cablePoint = curve.getPointAt(clampedT);
+                const gripHeight = carrier.userData.gripHeight || 0.6;
+
+                carrier.position.copy(cablePoint);
+                carrier.position.y -= gripHeight;
+
+                // Orient along cable direction (Y-rotation only to stay upright)
+                const tangent = curve.getTangentAt(clampedT);
                 if (carrier.userData.isReturn) tangent.negate();
-                carrier.lookAt(carrier.position.clone().add(tangent));
 
-                // Keep chairs level (rotate to be upright)
-                carrier.rotation.z = 0;
-                carrier.rotation.x *= 0.5; // Reduce tilt
+                const angle = Math.atan2(tangent.x, tangent.z);
+                carrier.rotation.set(0, angle, 0);
             }
         });
     }
