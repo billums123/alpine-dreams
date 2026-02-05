@@ -98,6 +98,16 @@ class AlpineDreams {
                 });
             }
 
+            // Track switch button
+            const trackBtn = document.getElementById('btn-switch-track');
+            if (trackBtn) {
+                trackBtn.addEventListener('click', () => {
+                    this.music.toggleTrack();
+                    const trackName = this.music.getTrackName();
+                    trackBtn.title = `Switch Track: ${trackName}`;
+                });
+            }
+
             // Start render loop
             this.sceneManager.onUpdate = (delta) => this.update(delta);
             this.sceneManager.start();

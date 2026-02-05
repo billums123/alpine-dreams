@@ -1,21 +1,24 @@
 /**
- * Music - Electronic track for fast downhill skiing
- * 135 BPM, driving bass, crisp drums, subtle synth melodies
- * Mood: adrenaline, freedom, cold mountain air
+ * Music - Dual track system for skiing
+ * Inspired by minimalist, atmospheric electronic music
+ * Clean plucked melodies, spacious reverb, warm bass
  */
 
 export class Music {
     constructor() {
         this.audioContext = null;
         this.masterGain = null;
-        this.compressor = null;
+        this.reverbGain = null;
+        this.delayNode = null;
+        this.delayFeedback = null;
         this.isPlaying = false;
         this.isMuted = false;
         this.oscillators = [];
         this.intervals = [];
         this.timeouts = [];
-        this.volume = 0.5;
-        this.bpm = 135;
+        this.volume = 0.55;
+        this.currentTrack = 1;
+        this.bpm = 110;
         this.beatTime = 60 / this.bpm;
     }
 
@@ -35,255 +38,260 @@ export class Music {
         try {
             this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
 
-            // Master compressor for glue
-            this.compressor = this.audioContext.createDynamicsCompressor();
-            this.compressor.threshold.value = -24;
-            this.compressor.knee.value = 30;
-            this.compressor.ratio.value = 4;
-            this.compressor.attack.value = 0.003;
-            this.compressor.release.value = 0.25;
+            // Spacious delay for that shimmering effect
+            this.delayNode = this.audioContext.createDelay(1);
+            this.delayNode.delayTime.value = this.beatTime * 0.75; // Dotted eighth
+
+            this.delayFeedback = this.audioContext.createGain();
+            this.delayFeedback.gain.value = 0.4;
+
+            const delayFilter = this.audioContext.createBiquadFilter();
+            delayFilter.type = 'lowpass';
+            delayFilter.frequency.value = 3000;
+
+            this.delayNode.connect(delayFilter);
+            delayFilter.connect(this.delayFeedback);
+            this.delayFeedback.connect(this.delayNode);
+
+            // Reverb bus
+            this.reverbGain = this.audioContext.createGain();
+            this.reverbGain.gain.value = 0.3;
 
             this.masterGain = this.audioContext.createGain();
             this.masterGain.gain.value = this.volume;
 
-            this.compressor.connect(this.masterGain);
+            this.delayNode.connect(this.masterGain);
+            this.reverbGain.connect(this.masterGain);
             this.masterGain.connect(this.audioContext.destination);
 
             if (this.audioContext.state === 'suspended') {
                 this.audioContext.resume();
             }
 
-            console.log('🎵 Alpine electronic track started!');
+            console.log('🎵 Music started!');
             this.play();
         } catch (e) {
             console.warn('Could not start music:', e);
         }
     }
 
+    // Long reverb tail
+    createReverbSend(input) {
+        const delays = [0.1, 0.23, 0.41, 0.57, 0.79];
+        delays.forEach(time => {
+            const delay = this.audioContext.createDelay(1);
+            delay.delayTime.value = time;
+            const gain = this.audioContext.createGain();
+            gain.gain.value = 0.15 * (1 - time * 0.5);
+            const filter = this.audioContext.createBiquadFilter();
+            filter.type = 'lowpass';
+            filter.frequency.value = 2000;
+            input.connect(delay);
+            delay.connect(filter);
+            filter.connect(gain);
+            gain.connect(this.reverbGain);
+        });
+    }
+
     play() {
         if (this.isPlaying || !this.audioContext) return;
         this.isPlaying = true;
 
-        // Start all layers
-        this.createKick();
-        this.createSnare();
-        this.createHiHats();
-        this.createBass();
-        this.createPad();
-        this.createArpeggio();
-        this.createLead();
+        if (this.currentTrack === 1) {
+            this.playTrackOne();
+        } else {
+            this.playTrackTwo();
+        }
     }
 
-    // Punchy four-on-the-floor kick
-    createKick() {
+    toggleTrack() {
+        this.stop();
+        this.currentTrack = this.currentTrack === 1 ? 2 : 1;
+        this.bpm = this.currentTrack === 1 ? 110 : 85;
+        this.beatTime = 60 / this.bpm;
+        if (this.delayNode) {
+            this.delayNode.delayTime.value = this.beatTime * 0.75;
+        }
+        this.play();
+        return this.currentTrack;
+    }
+
+    getTrackName() {
+        return this.currentTrack === 1 ? 'Shimmer Drive' : 'Deep Ambient';
+    }
+
+    // ==========================================
+    // TRACK 1: SHIMMER DRIVE
+    // Minimalist, clean plucks with driving bass
+    // ==========================================
+    playTrackOne() {
+        this.createMinimalKick();
+        this.createWarmBass();
+        this.createPluckedMelody();
+        this.createPadLayer();
+        this.createHighShimmer();
+    }
+
+    // Soft, warm kick - understated
+    createMinimalKick() {
         const interval = this.beatTime * 1000;
 
         const playKick = () => {
             if (!this.isPlaying) return;
             const now = this.audioContext.currentTime;
 
-            // Sub layer
-            const sub = this.audioContext.createOscillator();
-            const subGain = this.audioContext.createGain();
-            sub.type = 'sine';
-            sub.frequency.setValueAtTime(150, now);
-            sub.frequency.exponentialRampToValueAtTime(35, now + 0.08);
-            subGain.gain.setValueAtTime(0.8, now);
-            subGain.gain.exponentialRampToValueAtTime(0.001, now + 0.4);
-            sub.connect(subGain);
-            subGain.connect(this.compressor);
-            sub.start(now);
-            sub.stop(now + 0.4);
+            const osc = this.audioContext.createOscillator();
+            const gain = this.audioContext.createGain();
 
-            // Click layer for attack
-            const click = this.audioContext.createOscillator();
-            const clickGain = this.audioContext.createGain();
-            click.type = 'triangle';
-            click.frequency.setValueAtTime(1200, now);
-            click.frequency.exponentialRampToValueAtTime(60, now + 0.02);
-            clickGain.gain.setValueAtTime(0.3, now);
-            clickGain.gain.exponentialRampToValueAtTime(0.001, now + 0.03);
-            click.connect(clickGain);
-            clickGain.connect(this.compressor);
-            click.start(now);
-            click.stop(now + 0.05);
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(80, now);
+            osc.frequency.exponentialRampToValueAtTime(40, now + 0.12);
+
+            gain.gain.setValueAtTime(0.45, now);
+            gain.gain.exponentialRampToValueAtTime(0.001, now + 0.3);
+
+            osc.connect(gain);
+            gain.connect(this.masterGain);
+
+            osc.start(now);
+            osc.stop(now + 0.35);
         };
 
         this.intervals.push(setInterval(playKick, interval));
         playKick();
     }
 
-    // Snappy snare on 2 and 4
-    createSnare() {
+    // Warm, round bass with gentle movement
+    createWarmBass() {
         const interval = this.beatTime * 2000;
-
-        const playSnare = () => {
-            if (!this.isPlaying) return;
-            const now = this.audioContext.currentTime;
-
-            // Noise burst
-            const bufferSize = this.audioContext.sampleRate * 0.15;
-            const buffer = this.audioContext.createBuffer(1, bufferSize, this.audioContext.sampleRate);
-            const data = buffer.getChannelData(0);
-            for (let i = 0; i < bufferSize; i++) {
-                data[i] = Math.random() * 2 - 1;
-            }
-
-            const noise = this.audioContext.createBufferSource();
-            noise.buffer = buffer;
-
-            const noiseFilter = this.audioContext.createBiquadFilter();
-            noiseFilter.type = 'highpass';
-            noiseFilter.frequency.value = 2000;
-
-            const noiseGain = this.audioContext.createGain();
-            noiseGain.gain.setValueAtTime(0.35, now);
-            noiseGain.gain.exponentialRampToValueAtTime(0.001, now + 0.15);
-
-            noise.connect(noiseFilter);
-            noiseFilter.connect(noiseGain);
-            noiseGain.connect(this.compressor);
-            noise.start(now);
-
-            // Body tone
-            const body = this.audioContext.createOscillator();
-            const bodyGain = this.audioContext.createGain();
-            body.type = 'triangle';
-            body.frequency.setValueAtTime(250, now);
-            body.frequency.exponentialRampToValueAtTime(120, now + 0.05);
-            bodyGain.gain.setValueAtTime(0.4, now);
-            bodyGain.gain.exponentialRampToValueAtTime(0.001, now + 0.12);
-            body.connect(bodyGain);
-            bodyGain.connect(this.compressor);
-            body.start(now);
-            body.stop(now + 0.15);
-        };
-
-        // Offset to hit on beat 2
-        this.timeouts.push(setTimeout(() => {
-            this.intervals.push(setInterval(playSnare, interval));
-            playSnare();
-        }, this.beatTime * 1000));
-    }
-
-    // Crisp hi-hats with groove
-    createHiHats() {
-        const eighthNote = this.beatTime * 500;
-        let step = 0;
-
-        const playHat = () => {
-            if (!this.isPlaying) return;
-            const now = this.audioContext.currentTime;
-
-            // Vary velocity for groove
-            const velocities = [1, 0.5, 0.7, 0.5, 0.9, 0.5, 0.7, 0.6];
-            const vel = velocities[step % 8];
-
-            // Open hat on off-beats occasionally
-            const isOpen = step % 8 === 2 || step % 8 === 6;
-            const decay = isOpen ? 0.15 : 0.05;
-
-            const bufferSize = this.audioContext.sampleRate * decay;
-            const buffer = this.audioContext.createBuffer(1, bufferSize, this.audioContext.sampleRate);
-            const data = buffer.getChannelData(0);
-            for (let i = 0; i < bufferSize; i++) {
-                data[i] = Math.random() * 2 - 1;
-            }
-
-            const noise = this.audioContext.createBufferSource();
-            noise.buffer = buffer;
-
-            const filter = this.audioContext.createBiquadFilter();
-            filter.type = 'highpass';
-            filter.frequency.value = 8000;
-
-            const bandpass = this.audioContext.createBiquadFilter();
-            bandpass.type = 'bandpass';
-            bandpass.frequency.value = 10000;
-            bandpass.Q.value = 1;
-
-            const gain = this.audioContext.createGain();
-            gain.gain.setValueAtTime(0.18 * vel, now);
-            gain.gain.exponentialRampToValueAtTime(0.001, now + decay);
-
-            noise.connect(filter);
-            filter.connect(bandpass);
-            bandpass.connect(gain);
-            gain.connect(this.compressor);
-            noise.start(now);
-
-            step++;
-        };
-
-        this.intervals.push(setInterval(playHat, eighthNote));
-        playHat();
-    }
-
-    // Driving bass line with sidechain feel
-    createBass() {
-        const interval = this.beatTime * 1000;
-        const notes = [55, 55, 73.42, 65.41]; // A1, A1, D2, C2
+        // E minor / A minor progression
+        const notes = [82.41, 82.41, 110, 98]; // E2, E2, A2, G2
         let noteIndex = 0;
-        let beat = 0;
 
         const playBass = () => {
             if (!this.isPlaying) return;
             const now = this.audioContext.currentTime;
 
-            const note = notes[Math.floor(noteIndex / 4) % notes.length];
+            const note = notes[noteIndex % notes.length];
 
             const osc = this.audioContext.createOscillator();
             const osc2 = this.audioContext.createOscillator();
             const gain = this.audioContext.createGain();
             const filter = this.audioContext.createBiquadFilter();
 
-            osc.type = 'sawtooth';
+            osc.type = 'sine';
             osc.frequency.value = note;
-            osc2.type = 'square';
-            osc2.frequency.value = note * 0.998; // Slight detune
+            osc2.type = 'triangle';
+            osc2.frequency.value = note * 1.001;
 
             filter.type = 'lowpass';
-            filter.frequency.setValueAtTime(200, now);
-            filter.frequency.linearRampToValueAtTime(800, now + 0.1);
-            filter.frequency.linearRampToValueAtTime(300, now + this.beatTime * 0.8);
-            filter.Q.value = 4;
+            filter.frequency.value = 300;
+            filter.Q.value = 1;
 
-            // Sidechain-style envelope
-            gain.gain.setValueAtTime(0.001, now);
-            gain.gain.linearRampToValueAtTime(0.35, now + 0.05);
-            gain.gain.setValueAtTime(0.35, now + this.beatTime * 0.5);
-            gain.gain.linearRampToValueAtTime(0.001, now + this.beatTime * 0.95);
+            // Gentle swell
+            const duration = this.beatTime * 1.8;
+            gain.gain.setValueAtTime(0, now);
+            gain.gain.linearRampToValueAtTime(0.3, now + 0.1);
+            gain.gain.setValueAtTime(0.3, now + duration * 0.6);
+            gain.gain.linearRampToValueAtTime(0, now + duration);
 
             const mix = this.audioContext.createGain();
-            mix.gain.value = 0.5;
+            mix.gain.value = 0.6;
 
             osc.connect(mix);
             osc2.connect(mix);
             mix.connect(filter);
             filter.connect(gain);
-            gain.connect(this.compressor);
+            gain.connect(this.masterGain);
 
             osc.start(now);
             osc2.start(now);
-            osc.stop(now + this.beatTime);
-            osc2.stop(now + this.beatTime);
+            osc.stop(now + duration + 0.1);
+            osc2.stop(now + duration + 0.1);
 
             noteIndex++;
-            beat++;
         };
 
         this.intervals.push(setInterval(playBass, interval));
-        playBass();
+        // Bass enters after 4 beats
+        this.timeouts.push(setTimeout(playBass, this.beatTime * 4000));
     }
 
-    // Atmospheric pad for cold mountain air
-    createPad() {
+    // The iconic plucked melody with delay
+    createPluckedMelody() {
+        const sixteenth = this.beatTime * 250;
+        // Melodic pattern inspired by minimalist guitar plucks
+        const pattern = [
+            { note: 659.25, vel: 1 },    // E5
+            { note: null, vel: 0 },
+            { note: 493.88, vel: 0.7 },  // B4
+            { note: null, vel: 0 },
+            { note: 587.33, vel: 0.8 },  // D5
+            { note: null, vel: 0 },
+            { note: 493.88, vel: 0.6 },  // B4
+            { note: null, vel: 0 },
+            { note: 659.25, vel: 0.9 },  // E5
+            { note: null, vel: 0 },
+            { note: 587.33, vel: 0.7 },  // D5
+            { note: null, vel: 0 },
+            { note: 493.88, vel: 0.8 },  // B4
+            { note: null, vel: 0 },
+            { note: 440, vel: 0.6 },     // A4
+            { note: null, vel: 0 },
+        ];
+        let step = 0;
+
+        const playNote = () => {
+            if (!this.isPlaying) return;
+            const now = this.audioContext.currentTime;
+
+            const { note, vel } = pattern[step % pattern.length];
+
+            if (note && vel > 0) {
+                const osc = this.audioContext.createOscillator();
+                const gain = this.audioContext.createGain();
+                const filter = this.audioContext.createBiquadFilter();
+
+                // Clean, plucky tone
+                osc.type = 'triangle';
+                osc.frequency.value = note;
+
+                filter.type = 'lowpass';
+                filter.frequency.setValueAtTime(4000, now);
+                filter.frequency.exponentialRampToValueAtTime(1500, now + 0.3);
+                filter.Q.value = 1;
+
+                // Pluck envelope
+                gain.gain.setValueAtTime(0.12 * vel, now);
+                gain.gain.exponentialRampToValueAtTime(0.001, now + 0.8);
+
+                osc.connect(filter);
+                filter.connect(gain);
+
+                // Send to delay for shimmer
+                gain.connect(this.delayNode);
+                gain.connect(this.masterGain);
+                this.createReverbSend(gain);
+
+                osc.start(now);
+                osc.stop(now + 1);
+            }
+
+            step++;
+        };
+
+        this.intervals.push(setInterval(playNote, sixteenth));
+        playNote();
+    }
+
+    // Soft pad underneath
+    createPadLayer() {
         const changeInterval = this.beatTime * 8000;
         const chords = [
-            [220, 277.18, 329.63, 440],    // Am
-            [196, 246.94, 293.66, 392],    // G
-            [174.61, 220, 261.63, 349.23], // F
-            [196, 246.94, 293.66, 392],    // G
+            [164.81, 246.94, 329.63], // E3, B3, E4 (Em)
+            [164.81, 246.94, 329.63], // Em
+            [220, 329.63, 440],       // A3, E4, A4 (Am)
+            [196, 293.66, 392],       // G3, D4, G4 (G)
         ];
         let chordIndex = 0;
 
@@ -292,7 +300,7 @@ export class Music {
             const now = this.audioContext.currentTime;
             const chord = chords[chordIndex % chords.length];
 
-            chord.forEach((freq, i) => {
+            chord.forEach((freq) => {
                 const osc = this.audioContext.createOscillator();
                 const osc2 = this.audioContext.createOscillator();
                 const gain = this.audioContext.createGain();
@@ -300,18 +308,20 @@ export class Music {
 
                 osc.type = 'sine';
                 osc.frequency.value = freq;
-                osc2.type = 'triangle';
-                osc2.frequency.value = freq * 1.002;
+                osc2.type = 'sine';
+                osc2.frequency.value = freq * 1.003;
 
                 filter.type = 'lowpass';
-                filter.frequency.value = 2000;
-                filter.Q.value = 0.5;
+                filter.frequency.value = 800;
 
-                // Slow swell
+                const attack = 2;
+                const hold = this.beatTime * 6;
+                const release = 2;
+
                 gain.gain.setValueAtTime(0, now);
-                gain.gain.linearRampToValueAtTime(0.06, now + 2);
-                gain.gain.setValueAtTime(0.06, now + this.beatTime * 6);
-                gain.gain.linearRampToValueAtTime(0, now + this.beatTime * 8);
+                gain.gain.linearRampToValueAtTime(0.04, now + attack);
+                gain.gain.setValueAtTime(0.04, now + hold);
+                gain.gain.linearRampToValueAtTime(0, now + hold + release);
 
                 const mix = this.audioContext.createGain();
                 mix.gain.value = 0.5;
@@ -320,12 +330,218 @@ export class Music {
                 osc2.connect(mix);
                 mix.connect(filter);
                 filter.connect(gain);
-                gain.connect(this.compressor);
+                gain.connect(this.reverbGain);
 
                 osc.start(now);
                 osc2.start(now);
-                osc.stop(now + this.beatTime * 8 + 0.1);
-                osc2.stop(now + this.beatTime * 8 + 0.1);
+                osc.stop(now + hold + release + 0.5);
+                osc2.stop(now + hold + release + 0.5);
+            });
+
+            chordIndex++;
+        };
+
+        this.intervals.push(setInterval(playPad, changeInterval));
+        // Pads enter after 8 beats
+        this.timeouts.push(setTimeout(playPad, this.beatTime * 8000));
+    }
+
+    // High frequency shimmer
+    createHighShimmer() {
+        const interval = this.beatTime * 4000;
+
+        const playShimmer = () => {
+            if (!this.isPlaying) return;
+            const now = this.audioContext.currentTime;
+
+            const notes = [1318.51, 1567.98, 1975.53, 2349.32]; // E6, G6, B6, D7
+
+            for (let i = 0; i < 2; i++) {
+                const delay = Math.random() * 1.5;
+                const freq = notes[Math.floor(Math.random() * notes.length)];
+
+                const osc = this.audioContext.createOscillator();
+                const gain = this.audioContext.createGain();
+
+                osc.type = 'sine';
+                osc.frequency.value = freq;
+
+                gain.gain.setValueAtTime(0, now + delay);
+                gain.gain.linearRampToValueAtTime(0.015, now + delay + 0.1);
+                gain.gain.exponentialRampToValueAtTime(0.001, now + delay + 2.5);
+
+                osc.connect(gain);
+                gain.connect(this.delayNode);
+                gain.connect(this.reverbGain);
+
+                osc.start(now + delay);
+                osc.stop(now + delay + 3);
+            }
+        };
+
+        this.intervals.push(setInterval(playShimmer, interval));
+        this.timeouts.push(setTimeout(playShimmer, this.beatTime * 12000));
+    }
+
+    // ==========================================
+    // TRACK 2: DEEP AMBIENT
+    // Slower, more atmospheric, no drums
+    // ==========================================
+    playTrackTwo() {
+        this.createDeepDrone();
+        this.createSlowPlucks();
+        this.createAtmosphericPad();
+        this.createBells();
+        this.createSubMovement();
+    }
+
+    createDeepDrone() {
+        const changeInterval = this.beatTime * 16000;
+        const roots = [55, 49, 55, 41.2]; // A1, G1, A1, E1
+
+        let rootIndex = 0;
+
+        const playDrone = () => {
+            if (!this.isPlaying) return;
+            const now = this.audioContext.currentTime;
+            const root = roots[rootIndex % roots.length];
+
+            for (let d = -1; d <= 1; d++) {
+                const osc = this.audioContext.createOscillator();
+                const gain = this.audioContext.createGain();
+                const filter = this.audioContext.createBiquadFilter();
+
+                osc.type = 'sine';
+                osc.frequency.value = root * (1 + d * 0.002);
+
+                filter.type = 'lowpass';
+                filter.frequency.value = 200;
+
+                const attack = 5;
+                const hold = this.beatTime * 12;
+                const release = 4;
+
+                gain.gain.setValueAtTime(0, now);
+                gain.gain.linearRampToValueAtTime(0.12, now + attack);
+                gain.gain.setValueAtTime(0.12, now + hold);
+                gain.gain.linearRampToValueAtTime(0, now + hold + release);
+
+                osc.connect(filter);
+                filter.connect(gain);
+                gain.connect(this.masterGain);
+
+                osc.start(now);
+                osc.stop(now + hold + release + 1);
+            }
+
+            rootIndex++;
+        };
+
+        this.intervals.push(setInterval(playDrone, changeInterval));
+        playDrone();
+    }
+
+    createSlowPlucks() {
+        const interval = this.beatTime * 2000;
+        const notes = [329.63, 493.88, 440, 392, 329.63, 587.33, 493.88, 440]; // E4, B4, A4, G4...
+        let noteIndex = 0;
+
+        const playPluck = () => {
+            if (!this.isPlaying) return;
+
+            // Some notes are silent for space
+            if (Math.random() > 0.7) {
+                noteIndex++;
+                return;
+            }
+
+            const now = this.audioContext.currentTime;
+            const note = notes[noteIndex % notes.length];
+
+            const osc = this.audioContext.createOscillator();
+            const gain = this.audioContext.createGain();
+            const filter = this.audioContext.createBiquadFilter();
+
+            osc.type = 'triangle';
+            osc.frequency.value = note;
+
+            filter.type = 'lowpass';
+            filter.frequency.setValueAtTime(2500, now);
+            filter.frequency.exponentialRampToValueAtTime(800, now + 0.5);
+
+            gain.gain.setValueAtTime(0.08, now);
+            gain.gain.exponentialRampToValueAtTime(0.001, now + 2);
+
+            osc.connect(filter);
+            filter.connect(gain);
+            gain.connect(this.delayNode);
+            gain.connect(this.reverbGain);
+            this.createReverbSend(gain);
+
+            osc.start(now);
+            osc.stop(now + 2.5);
+
+            noteIndex++;
+        };
+
+        this.intervals.push(setInterval(playPluck, interval));
+        this.timeouts.push(setTimeout(playPluck, 3000));
+    }
+
+    createAtmosphericPad() {
+        const changeInterval = this.beatTime * 12000;
+        const chords = [
+            [220, 329.63, 493.88],    // A3, E4, B4
+            [196, 293.66, 440],       // G3, D4, A4
+            [174.61, 261.63, 392],    // F3, C4, G4
+            [196, 293.66, 440],       // G3, D4, A4
+        ];
+        let chordIndex = 0;
+
+        const playPad = () => {
+            if (!this.isPlaying) return;
+            const now = this.audioContext.currentTime;
+            const chord = chords[chordIndex % chords.length];
+
+            chord.forEach((freq) => {
+                for (let d = -1; d <= 1; d++) {
+                    const osc = this.audioContext.createOscillator();
+                    const osc2 = this.audioContext.createOscillator();
+                    const gain = this.audioContext.createGain();
+                    const filter = this.audioContext.createBiquadFilter();
+
+                    osc.type = 'sine';
+                    osc.frequency.value = freq * (1 + d * 0.004);
+                    osc2.type = 'triangle';
+                    osc2.frequency.value = freq * (1 + d * 0.004) * 1.001;
+
+                    filter.type = 'lowpass';
+                    filter.frequency.value = 1200;
+
+                    const attack = 3;
+                    const hold = this.beatTime * 8;
+                    const release = 4;
+
+                    gain.gain.setValueAtTime(0, now);
+                    gain.gain.linearRampToValueAtTime(0.035, now + attack);
+                    gain.gain.setValueAtTime(0.035, now + hold);
+                    gain.gain.linearRampToValueAtTime(0, now + hold + release);
+
+                    const mix = this.audioContext.createGain();
+                    mix.gain.value = 0.4;
+
+                    osc.connect(mix);
+                    osc2.connect(mix);
+                    mix.connect(filter);
+                    filter.connect(gain);
+                    gain.connect(this.reverbGain);
+                    this.createReverbSend(gain);
+
+                    osc.start(now);
+                    osc2.start(now);
+                    osc.stop(now + hold + release + 1);
+                    osc2.stop(now + hold + release + 1);
+                }
             });
 
             chordIndex++;
@@ -335,127 +551,92 @@ export class Music {
         playPad();
     }
 
-    // Subtle arpeggio for energy
-    createArpeggio() {
-        const sixteenth = this.beatTime * 250;
-        const pattern = [0, 4, 7, 12, 7, 4, 0, 4]; // Octave arp pattern
-        const roots = [440, 440, 587.33, 523.25]; // A4, A4, D5, C5
-        let step = 0;
-        let rootIndex = 0;
+    createBells() {
+        const interval = this.beatTime * 8000;
 
-        const playArp = () => {
+        const playBell = () => {
             if (!this.isPlaying) return;
+            if (Math.random() > 0.6) return;
 
-            // Only play on certain bars for variation
-            const barPosition = Math.floor(step / 16) % 4;
-            if (barPosition === 0 || barPosition === 2) {
-                const now = this.audioContext.currentTime;
-                const root = roots[Math.floor(step / 32) % roots.length];
-                const semitone = pattern[step % pattern.length];
-                const freq = root * Math.pow(2, semitone / 12);
+            const now = this.audioContext.currentTime;
+            const notes = [659.25, 783.99, 987.77, 1174.66, 1318.51]; // E5, G5, B5, D6, E6
+            const freq = notes[Math.floor(Math.random() * notes.length)];
 
+            const harmonics = [1, 2.4, 4.1, 5.9];
+            harmonics.forEach((h, i) => {
                 const osc = this.audioContext.createOscillator();
                 const gain = this.audioContext.createGain();
-                const filter = this.audioContext.createBiquadFilter();
 
-                osc.type = 'sawtooth';
-                osc.frequency.value = freq;
+                osc.type = 'sine';
+                osc.frequency.value = freq * h;
 
-                filter.type = 'lowpass';
-                filter.frequency.value = 3000 + Math.sin(step * 0.1) * 1000;
-                filter.Q.value = 2;
+                const vol = 0.025 / (i + 1);
+                const decay = 4 - i * 0.7;
 
-                gain.gain.setValueAtTime(0.08, now);
-                gain.gain.exponentialRampToValueAtTime(0.001, now + sixteenth / 1000 * 0.9);
+                gain.gain.setValueAtTime(vol, now);
+                gain.gain.exponentialRampToValueAtTime(0.001, now + decay);
 
-                osc.connect(filter);
-                filter.connect(gain);
-                gain.connect(this.compressor);
+                osc.connect(gain);
+                gain.connect(this.delayNode);
+                gain.connect(this.reverbGain);
 
                 osc.start(now);
-                osc.stop(now + sixteenth / 1000);
-            }
-
-            step++;
-        };
-
-        this.intervals.push(setInterval(playArp, sixteenth));
-    }
-
-    // Occasional lead melody hits
-    createLead() {
-        const barLength = this.beatTime * 4000;
-        const melodies = [
-            [880, null, 783.99, null, 659.25, null, 783.99, null],
-            [880, 783.99, null, 659.25, null, 587.33, 659.25, null],
-            [1046.5, null, 880, null, 783.99, null, 659.25, null],
-            [null, null, null, null, null, null, null, null], // Rest bar
-        ];
-        let bar = 0;
-
-        const playBar = () => {
-            if (!this.isPlaying) return;
-
-            const melody = melodies[bar % melodies.length];
-            const eighthNote = this.beatTime * 500;
-
-            melody.forEach((freq, i) => {
-                if (freq) {
-                    this.timeouts.push(setTimeout(() => {
-                        if (!this.isPlaying) return;
-                        const now = this.audioContext.currentTime;
-
-                        const osc = this.audioContext.createOscillator();
-                        const osc2 = this.audioContext.createOscillator();
-                        const gain = this.audioContext.createGain();
-                        const filter = this.audioContext.createBiquadFilter();
-                        const delay = this.audioContext.createDelay();
-                        const delayGain = this.audioContext.createGain();
-
-                        osc.type = 'square';
-                        osc.frequency.value = freq;
-                        osc2.type = 'sawtooth';
-                        osc2.frequency.value = freq * 1.005;
-
-                        filter.type = 'lowpass';
-                        filter.frequency.value = 4000;
-                        filter.Q.value = 1;
-
-                        delay.delayTime.value = this.beatTime * 0.75;
-                        delayGain.gain.value = 0.2;
-
-                        gain.gain.setValueAtTime(0.1, now);
-                        gain.gain.exponentialRampToValueAtTime(0.001, now + eighthNote / 1000 * 1.5);
-
-                        const mix = this.audioContext.createGain();
-                        mix.gain.value = 0.5;
-
-                        osc.connect(mix);
-                        osc2.connect(mix);
-                        mix.connect(filter);
-                        filter.connect(gain);
-                        gain.connect(this.compressor);
-
-                        // Delay feedback
-                        gain.connect(delay);
-                        delay.connect(delayGain);
-                        delayGain.connect(this.compressor);
-
-                        osc.start(now);
-                        osc2.start(now);
-                        osc.stop(now + eighthNote / 1000 * 2);
-                        osc2.stop(now + eighthNote / 1000 * 2);
-                    }, i * eighthNote));
-                }
+                osc.stop(now + decay + 1);
             });
-
-            bar++;
         };
 
-        this.intervals.push(setInterval(playBar, barLength));
-        this.timeouts.push(setTimeout(playBar, barLength * 2)); // Delay lead entry
+        this.intervals.push(setInterval(playBell, interval));
+        this.timeouts.push(setTimeout(playBell, 6000));
     }
 
+    createSubMovement() {
+        const cycleTime = this.beatTime * 24000;
+
+        const playSub = () => {
+            if (!this.isPlaying) return;
+            const now = this.audioContext.currentTime;
+
+            const osc = this.audioContext.createOscillator();
+            const osc2 = this.audioContext.createOscillator();
+            const gain = this.audioContext.createGain();
+            const filter = this.audioContext.createBiquadFilter();
+
+            osc.type = 'sine';
+            osc.frequency.value = 36;
+            osc2.type = 'sine';
+            osc2.frequency.value = 36.5;
+
+            filter.type = 'lowpass';
+            filter.frequency.value = 80;
+
+            const duration = this.beatTime * 20;
+            gain.gain.setValueAtTime(0, now);
+            gain.gain.linearRampToValueAtTime(0.18, now + duration * 0.3);
+            gain.gain.linearRampToValueAtTime(0.12, now + duration * 0.7);
+            gain.gain.linearRampToValueAtTime(0, now + duration);
+
+            const mix = this.audioContext.createGain();
+            mix.gain.value = 0.5;
+
+            osc.connect(mix);
+            osc2.connect(mix);
+            mix.connect(filter);
+            filter.connect(gain);
+            gain.connect(this.masterGain);
+
+            osc.start(now);
+            osc2.start(now);
+            osc.stop(now + duration + 1);
+            osc2.stop(now + duration + 1);
+        };
+
+        this.intervals.push(setInterval(playSub, cycleTime));
+        this.timeouts.push(setTimeout(playSub, 5000));
+    }
+
+    // ==========================================
+    // CONTROLS
+    // ==========================================
     setVolume(vol) {
         this.volume = Math.max(0, Math.min(1, vol));
         if (this.masterGain) {
@@ -466,14 +647,14 @@ export class Music {
     mute() {
         this.isMuted = true;
         if (this.masterGain) {
-            this.masterGain.gain.linearRampToValueAtTime(0, this.audioContext.currentTime + 0.1);
+            this.masterGain.gain.linearRampToValueAtTime(0, this.audioContext.currentTime + 0.3);
         }
     }
 
     unmute() {
         this.isMuted = false;
         if (this.masterGain) {
-            this.masterGain.gain.linearRampToValueAtTime(this.volume, this.audioContext.currentTime + 0.1);
+            this.masterGain.gain.linearRampToValueAtTime(this.volume, this.audioContext.currentTime + 0.3);
         }
     }
 
