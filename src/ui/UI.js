@@ -5,13 +5,14 @@
 import * as THREE from 'three';
 
 export class UI {
-    constructor(objectPlacer, snow, sceneManager, mountain, skier, trees) {
+    constructor(objectPlacer, snow, sceneManager, mountain, skier, trees, cameraControls) {
         this.objectPlacer = objectPlacer;
         this.snow = snow;
         this.sceneManager = sceneManager;
         this.mountain = mountain;
         this.skier = skier;
         this.trees = trees;
+        this.cameraControls = cameraControls;
 
         // DOM elements
         this.modeIndicator = null;
@@ -23,6 +24,7 @@ export class UI {
         // Sculpting state
         this.sculptMode = null;
         this.isSculpting = false;
+        this.ctrlPressed = false;
 
         // Raycaster for terrain sculpting
         this.raycaster = new THREE.Raycaster();
@@ -32,6 +34,8 @@ export class UI {
         this.onMouseMove = this.onMouseMove.bind(this);
         this.onMouseDown = this.onMouseDown.bind(this);
         this.onMouseUp = this.onMouseUp.bind(this);
+        this.onKeyDownGlobal = this.onKeyDownGlobal.bind(this);
+        this.onKeyUpGlobal = this.onKeyUpGlobal.bind(this);
     }
 
     init() {
@@ -63,6 +67,30 @@ export class UI {
         canvas.addEventListener('mousemove', this.onMouseMove);
         canvas.addEventListener('mousedown', this.onMouseDown);
         canvas.addEventListener('mouseup', this.onMouseUp);
+
+        // Set up global key listeners for Ctrl key (camera rotation in sculpt mode)
+        window.addEventListener('keydown', this.onKeyDownGlobal);
+        window.addEventListener('keyup', this.onKeyUpGlobal);
+    }
+
+    onKeyDownGlobal(e) {
+        if (e.key === 'Control') {
+            this.ctrlPressed = true;
+            // Enable camera rotation when Ctrl is pressed in sculpt mode
+            if (this.sculptMode && this.cameraControls) {
+                this.cameraControls.setEnabled(true);
+            }
+        }
+    }
+
+    onKeyUpGlobal(e) {
+        if (e.key === 'Control') {
+            this.ctrlPressed = false;
+            // Disable camera rotation when Ctrl is released in sculpt mode
+            if (this.sculptMode && this.cameraControls) {
+                this.cameraControls.setEnabled(false);
+            }
+        }
     }
 
     setupPaletteEvents() {
@@ -106,13 +134,18 @@ export class UI {
                     this.sculptMode = sculptType;
                     document.body.classList.add('sculpt-mode');
 
+                    // Disable camera rotation (require Ctrl to rotate)
+                    if (this.cameraControls) {
+                        this.cameraControls.setEnabled(false);
+                    }
+
                     const modeNames = {
                         'raise': 'Raise Terrain',
                         'lower': 'Lower Terrain',
                         'smooth': 'Smooth Terrain',
                         'flatten': 'Flatten Terrain'
                     };
-                    this.showModeIndicator(`Sculpting: ${modeNames[sculptType]}`);
+                    this.showModeIndicator(`Sculpting: ${modeNames[sculptType]} (Ctrl+drag to rotate)`);
                 }
             });
         });
@@ -180,15 +213,22 @@ export class UI {
         this.objectPlacer.cancelPlacement();
         this.selectPaletteItem(null);
         this.hideModeIndicator();
+        // Re-enable camera rotation
+        if (this.cameraControls) {
+            this.cameraControls.setEnabled(true);
+        }
     }
 
     cancelSculptMode() {
         this.sculptMode = null;
         this.isSculpting = false;
         document.body.classList.remove('sculpt-mode');
-        if (!this.objectPlacer.mode || this.objectPlacer.mode === 'select') {
-            this.selectPaletteItem(null);
-            this.hideModeIndicator();
+        // Always clear selection and hide indicator when cancelling sculpt mode
+        this.selectPaletteItem(null);
+        this.hideModeIndicator();
+        // Re-enable camera rotation
+        if (this.cameraControls) {
+            this.cameraControls.setEnabled(true);
         }
     }
 

@@ -406,18 +406,29 @@ export class Skier {
             this.velocity.z *= (1 - this.airFriction);
         }
 
-        // Apply velocity
+        // Apply horizontal velocity
         this.position.x += this.velocity.x * delta;
         this.position.z += this.velocity.z * delta;
-        this.position.y += this.verticalVelocity * delta;
 
-        // Ground collision
+        // Get terrain height at new position
         const newTerrainHeight = this.mountain.getHeightAt(this.position.x, this.position.z);
-        if (this.position.y <= newTerrainHeight) {
+
+        // Handle vertical movement
+        if (this.isGrounded && !this.isJumping) {
+            // When grounded, always stick to terrain
             this.position.y = newTerrainHeight;
             this.verticalVelocity = 0;
-            this.isGrounded = true;
-            this.isJumping = false;
+        } else {
+            // In the air - apply vertical velocity
+            this.position.y += this.verticalVelocity * delta;
+
+            // Ground collision check
+            if (this.position.y <= newTerrainHeight) {
+                this.position.y = newTerrainHeight;
+                this.verticalVelocity = 0;
+                this.isGrounded = true;
+                this.isJumping = false;
+            }
         }
 
         // Calculate current speed

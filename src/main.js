@@ -79,7 +79,7 @@ class AlpineDreams {
             );
 
             // Initialize UI
-            this.ui = new UI(this.objectPlacer, this.snow, this.sceneManager, this.mountain, this.skier, this.trees);
+            this.ui = new UI(this.objectPlacer, this.snow, this.sceneManager, this.mountain, this.skier, this.trees, this.cameraControls);
             this.ui.init();
 
             // Start render loop
