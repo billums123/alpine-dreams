@@ -30,6 +30,9 @@ export class Mountain {
 
         // Randomized peak parameters (generated from seed)
         this.peaks = this.generateRandomPeaks();
+
+        // Random cliff formations
+        this.cliffs = this.generateRandomCliffs();
     }
 
     // Generate random peak positions and heights
@@ -53,6 +56,34 @@ export class Mountain {
         }
 
         return peaks;
+    }
+
+    // Generate random cliff formations
+    generateRandomCliffs() {
+        const cliffs = [];
+        const numCliffs = 3 + Math.floor(this.seededRandom() * 5); // 3-7 cliffs
+
+        const terrainRadius = this.width * 0.375;
+
+        for (let i = 0; i < numCliffs; i++) {
+            // Cliffs appear on the mountain slopes
+            const angle = this.seededRandom() * Math.PI * 2;
+            const dist = 30 + this.seededRandom() * terrainRadius * 0.6;
+
+            // Cliff direction (perpendicular to radius for natural look)
+            const cliffAngle = angle + Math.PI / 2 + (this.seededRandom() - 0.5) * 0.5;
+
+            cliffs.push({
+                x: Math.cos(angle) * dist,
+                z: Math.sin(angle) * dist - terrainRadius * 0.2,
+                angle: cliffAngle, // Direction the cliff faces
+                length: 30 + this.seededRandom() * 60, // How long the cliff is
+                height: 8 + this.seededRandom() * 15, // How tall the drop is
+                steepness: 0.8 + this.seededRandom() * 0.2 // How steep (0.8-1.0)
+            });
+        }
+
+        return cliffs;
     }
 
     // Seeded random number generator
@@ -151,6 +182,12 @@ export class Mountain {
         const valleyFloor = this.smoothstep(terrainRadius * 0.2, terrainRadius * 0.5, z);
         height *= (1 - valleyFloor * 0.6);
 
+        // Add cliff formations
+        for (const cliff of this.cliffs) {
+            const cliffEffect = this.calculateCliffEffect(x, z, cliff);
+            height -= cliffEffect;
+        }
+
         // Ensure minimum height
         height = Math.max(0, height);
 
@@ -167,6 +204,50 @@ export class Mountain {
         const dz = z - centerZ;
         const distSq = dx * dx + dz * dz;
         return height * Math.exp(-distSq / (radius * radius));
+    }
+
+    // Calculate cliff drop effect at a position
+    calculateCliffEffect(x, z, cliff) {
+        // Vector from cliff center to point
+        const dx = x - cliff.x;
+        const dz = z - cliff.z;
+
+        // Project onto cliff direction (perpendicular distance)
+        const cliffDirX = Math.cos(cliff.angle);
+        const cliffDirZ = Math.sin(cliff.angle);
+
+        // Distance along cliff line
+        const alongCliff = dx * cliffDirX + dz * cliffDirZ;
+
+        // Distance perpendicular to cliff (how far "into" the cliff)
+        const perpDist = dx * (-cliffDirZ) + dz * cliffDirX;
+
+        // Check if within cliff length
+        const halfLength = cliff.length / 2;
+        if (Math.abs(alongCliff) > halfLength) return 0;
+
+        // Smooth falloff along the cliff length
+        const lengthFalloff = 1 - Math.pow(alongCliff / halfLength, 2);
+
+        // Cliff face - sharp drop on one side
+        const cliffWidth = 8; // Width of the transition
+        const dropStart = -2; // Where the drop begins
+        const dropEnd = cliffWidth; // Where the drop ends
+
+        let dropAmount = 0;
+        if (perpDist > dropStart && perpDist < dropEnd) {
+            // In the cliff transition zone - create steep drop
+            const t = (perpDist - dropStart) / (dropEnd - dropStart);
+            // Use steep sigmoid for cliff face
+            const steepT = 1 / (1 + Math.exp(-10 * (t - 0.5) * cliff.steepness));
+            dropAmount = cliff.height * steepT * lengthFalloff;
+        } else if (perpDist >= dropEnd) {
+            // Below the cliff - full drop
+            const fadeOut = Math.exp(-(perpDist - dropEnd) / 20);
+            dropAmount = cliff.height * lengthFalloff * fadeOut;
+        }
+
+        return dropAmount;
     }
 
     // Smooth noise using value noise with cubic interpolation
@@ -474,8 +555,9 @@ export class Mountain {
             this.seed = Math.random() * 1000;
         }
 
-        // Regenerate random peaks with new seed
+        // Regenerate random peaks and cliffs with new seed
         this.peaks = this.generateRandomPeaks();
+        this.cliffs = this.generateRandomCliffs();
 
         this.generateHeightMap();
         this.applyHeightMap();

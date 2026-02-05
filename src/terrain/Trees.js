@@ -23,19 +23,61 @@ export class Trees {
     populate() {
         this.createMaterials();
 
-        // Define tree placement zones (avoid ski slopes and peaks)
-        const treeZones = [
-            { minX: -45, maxX: -15, minZ: -30, maxZ: 20, density: 0.6 },
-            { minX: 15, maxX: 45, minZ: -25, maxZ: 25, density: 0.5 },
-            { minX: -20, maxX: 20, minZ: 25, maxZ: 45, density: 0.4 },
-            { minX: -35, maxX: -20, minZ: -40, maxZ: -20, density: 0.3 },
-            { minX: 25, maxX: 40, minZ: -35, maxZ: -15, density: 0.35 }
-        ];
+        // Scatter trees across the entire terrain
+        const terrainSize = this.mountain.width;
+        const halfSize = terrainSize / 2;
+        const targetTreeCount = 2000; // Target number of trees
+        let attempts = 0;
+        const maxAttempts = targetTreeCount * 5;
 
-        treeZones.forEach(zone => {
-            this.populateZone(zone);
-        });
+        while (this.trees.length < targetTreeCount && attempts < maxAttempts) {
+            attempts++;
 
+            // Random position across terrain
+            const x = (Math.random() - 0.5) * terrainSize * 0.95;
+            const z = (Math.random() - 0.5) * terrainSize * 0.95;
+            const height = this.mountain.getHeightAt(x, z);
+
+            // Only place trees where there's actual terrain (height > 0.5)
+            if (height < 0.5) continue;
+
+            // Don't place above tree line
+            if (height > 60) continue;
+
+            // Don't place on very steep slopes (cliffs)
+            const slope = this.mountain.getSlopeAt ? this.mountain.getSlopeAt(x, z) : 0;
+            if (slope > 0.65) continue;
+
+            // Density varies with height - more trees at lower elevations
+            const heightFactor = 1 - (height / 60) * 0.5;
+            if (Math.random() > heightFactor) continue;
+
+            // Create tree
+            const variant = Math.random();
+            let tree;
+
+            if (variant < 0.4) {
+                tree = this.createPineTree(0.8 + Math.random() * 0.6);
+            } else if (variant < 0.7) {
+                tree = this.createTallPine(0.7 + Math.random() * 0.5);
+            } else {
+                tree = this.createSnowyCone(0.6 + Math.random() * 0.4);
+            }
+
+            tree.position.set(x, height, z);
+            tree.rotation.y = Math.random() * Math.PI * 2;
+
+            // Slight tilt based on terrain
+            const normal = this.mountain.getNormalAt(x, z);
+            tree.rotation.x = -normal.z * 0.1;
+            tree.rotation.z = normal.x * 0.1;
+
+            tree.castShadow = true;
+            this.treeGroup.add(tree);
+            this.trees.push(tree);
+        }
+
+        console.log(`Trees populated: ${this.trees.length}`);
         this.scene.add(this.treeGroup);
     }
 
@@ -66,19 +108,19 @@ export class Trees {
     populateZone(zone) {
         const { minX, maxX, minZ, maxZ, density } = zone;
         const area = (maxX - minX) * (maxZ - minZ);
-        const treeCount = Math.floor(area * density * 0.05);
+        const treeCount = Math.floor(area * density * 0.08);
 
         for (let i = 0; i < treeCount; i++) {
             const x = minX + Math.random() * (maxX - minX);
             const z = minZ + Math.random() * (maxZ - minZ);
             const height = this.mountain.getHeightAt(x, z);
 
-            // Don't place trees too high (above tree line) or too low
-            if (height < 2 || height > 28) continue;
+            // Don't place trees at very low areas (valley floor) or above tree line
+            if (height < 1 || height > 65) continue;
 
-            // Don't place on steep slopes
+            // Don't place on very steep slopes (cliffs)
             const slope = this.mountain.getSlopeAt ? this.mountain.getSlopeAt(x, z) : 0;
-            if (slope > 0.5) continue;
+            if (slope > 0.7) continue;
 
             // Random tree variant
             const variant = Math.random();

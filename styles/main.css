@@ -209,6 +209,24 @@ body.sculpt-mode {
     color: var(--text-muted);
 }
 
+#trick-status {
+    font-size: 1.2rem;
+    font-weight: 600;
+    color: #ffcc00;
+    text-shadow: 0 0 10px rgba(255, 204, 0, 0.5);
+    margin-top: 8px;
+    animation: pulse 0.5s ease-in-out infinite;
+}
+
+#trick-status.hidden {
+    display: none;
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.7; }
+}
+
 /* Controls Hint */
 #controls-hint {
     position: absolute;

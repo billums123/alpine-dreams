@@ -44,6 +44,23 @@ export class Skier {
         this.verticalVelocity = 0;
         this.currentSpeed = 0;
 
+        // Flip/trick state
+        this.flipRotation = 0; // Current flip angle (radians)
+        this.flipVelocity = 0; // Flip angular velocity
+        this.isFlipping = false;
+        this.flipDirection = 0; // 1 = backflip, -1 = frontflip
+        this.trickLanded = false;
+
+        // Body part references for animation
+        this.bodyParts = {
+            torso: null,
+            head: null,
+            leftArm: null,
+            rightArm: null,
+            leftLeg: null,
+            rightLeg: null
+        };
+
         // Snow spray particles
         this.snowSprayParticles = null;
         this.snowSprayPositions = null;
@@ -126,12 +143,14 @@ export class Skier {
             roughness: 0.8
         });
 
-        // Torso (jacket)
+        // Torso (jacket) - store reference for animation
         const torsoGeometry = new THREE.CapsuleGeometry(0.22, 0.45, 8, 12);
         const torso = new THREE.Mesh(torsoGeometry, jacketMaterial);
         torso.position.set(0, 1.05, 0);
         torso.rotation.x = 0.25;
+        torso.name = 'torso';
         skier.add(torso);
+        this.bodyParts.torso = torso;
 
         // Head
         const headGeometry = new THREE.SphereGeometry(0.16, 12, 10);
@@ -487,10 +506,18 @@ export class Skier {
             case 'KeyW':
             case 'ArrowUp':
                 this.input.forward = true;
+                // Initiate backflip if airborne and not already flipping
+                if (!this.isGrounded && !this.isFlipping && this.verticalVelocity > 0) {
+                    this.startFlip(1); // Backflip
+                }
                 break;
             case 'KeyS':
             case 'ArrowDown':
                 this.input.backward = true;
+                // Initiate frontflip if airborne and not already flipping
+                if (!this.isGrounded && !this.isFlipping && this.verticalVelocity > 0) {
+                    this.startFlip(-1); // Frontflip
+                }
                 break;
             case 'KeyA':
             case 'ArrowLeft':
@@ -530,7 +557,55 @@ export class Skier {
         this.isGrounded = true;
         this.isJumping = false;
         this.edgeAngle = 0;
+        this.flipRotation = 0;
+        this.flipVelocity = 0;
+        this.isFlipping = false;
         this.mesh.position.copy(this.position);
+    }
+
+    startFlip(direction) {
+        this.isFlipping = true;
+        this.flipDirection = direction;
+        this.flipRotation = 0;
+        // Flip speed based on jump height/speed
+        this.flipVelocity = direction * (8 + Math.min(this.currentSpeed * 0.3, 4));
+        this.trickLanded = false;
+    }
+
+    updateFlip(delta) {
+        if (!this.isFlipping) return;
+
+        // Apply flip rotation
+        this.flipRotation += this.flipVelocity * delta;
+
+        // Check if flip is complete (full 360 degrees = 2*PI)
+        const fullFlip = Math.abs(this.flipRotation) >= Math.PI * 2;
+
+        // If we've done a full flip, allow landing
+        if (fullFlip && !this.trickLanded) {
+            this.trickLanded = true;
+        }
+
+        // Landing detection - if grounded while flipping
+        if (this.isGrounded) {
+            // Check if landed cleanly (close to upright)
+            const normalizedRotation = this.flipRotation % (Math.PI * 2);
+            const landingAngle = Math.abs(normalizedRotation);
+
+            // Clean landing if close to full rotation or zero
+            const cleanLanding = landingAngle < 0.5 || landingAngle > Math.PI * 2 - 0.5 ||
+                                 (landingAngle > Math.PI - 0.5 && landingAngle < Math.PI + 0.5);
+
+            if (!cleanLanding) {
+                // Crash! Lose most speed
+                this.currentSpeed *= 0.1;
+            }
+
+            // Reset flip state
+            this.isFlipping = false;
+            this.flipRotation = 0;
+            this.flipVelocity = 0;
+        }
     }
 
     onKeyUp(e) {
@@ -701,8 +776,14 @@ export class Skier {
         // Update mesh position
         this.mesh.position.copy(this.position);
 
+        // Update flip if in air
+        this.updateFlip(delta);
+
         // Align skier to terrain surface using quaternion
         this.alignToTerrain(terrainNormal);
+
+        // Animate body parts based on movement
+        this.animateBody(delta);
 
         // Update camera
         this.updateCamera(delta);
@@ -797,8 +878,8 @@ export class Skier {
 
     // Properly align skier mesh to terrain surface
     alignToTerrain(terrainNormal) {
-        // Get the up vector (terrain normal)
-        const up = terrainNormal.clone().normalize();
+        // Get the up vector (terrain normal when grounded, world up when airborne)
+        const up = this.isGrounded ? terrainNormal.clone().normalize() : new THREE.Vector3(0, 1, 0);
 
         // Forward direction based on skier's facing rotation
         let forward = new THREE.Vector3(
@@ -829,6 +910,53 @@ export class Skier {
             const leanQuat = new THREE.Quaternion();
             leanQuat.setFromAxisAngle(forward, -this.edgeAngle * 0.6);
             this.mesh.quaternion.multiply(leanQuat);
+        }
+
+        // Apply flip rotation when airborne
+        if (this.isFlipping && !this.isGrounded) {
+            const flipQuat = new THREE.Quaternion();
+            flipQuat.setFromAxisAngle(right, this.flipRotation);
+            this.mesh.quaternion.multiply(flipQuat);
+        }
+    }
+
+    // Animate body parts for more life-like movement
+    animateBody(delta) {
+        if (!this.bodyParts.torso) return;
+
+        const torso = this.bodyParts.torso;
+        const speedFactor = this.currentSpeed / this.maxSpeed;
+
+        // Base skiing crouch position
+        let targetCrouch = 0.25;
+
+        // Crouch more when going fast
+        targetCrouch += speedFactor * 0.15;
+
+        // Crouch more when turning hard
+        targetCrouch += Math.abs(this.edgeAngle) * 0.1;
+
+        // Tuck position when airborne (if not flipping)
+        if (!this.isGrounded && !this.isFlipping) {
+            targetCrouch += 0.3;
+        }
+
+        // Tuck tight during flips
+        if (this.isFlipping) {
+            targetCrouch += 0.5;
+        }
+
+        // Smoothly interpolate torso bend
+        torso.rotation.x = THREE.MathUtils.lerp(torso.rotation.x, targetCrouch, 0.1);
+
+        // Add subtle side-to-side movement when turning
+        const targetSideLean = this.edgeAngle * 0.15;
+        torso.rotation.z = THREE.MathUtils.lerp(torso.rotation.z || 0, targetSideLean, 0.1);
+
+        // Subtle bobbing motion based on speed
+        if (this.isGrounded && this.currentSpeed > 2) {
+            const bob = Math.sin(performance.now() * 0.01 * speedFactor) * 0.02 * speedFactor;
+            torso.position.y = 1.05 + bob;
         }
     }
 
@@ -879,6 +1007,22 @@ export class Skier {
         // Convert speed to km/h (approximate scaling)
         const speedKmh = Math.round(this.currentSpeed * 3.6);
         document.getElementById('speed-value').textContent = speedKmh;
+
+        // Show trick status
+        const trickStatus = document.getElementById('trick-status');
+        if (trickStatus) {
+            if (this.isFlipping) {
+                const flipProgress = Math.abs(this.flipRotation) / (Math.PI * 2) * 100;
+                const trickName = this.flipDirection > 0 ? 'BACKFLIP' : 'FRONTFLIP';
+                trickStatus.textContent = `${trickName} ${Math.min(100, Math.round(flipProgress))}%`;
+                trickStatus.classList.remove('hidden');
+            } else if (!this.isGrounded) {
+                trickStatus.textContent = 'AIR! (W=backflip, S=frontflip)';
+                trickStatus.classList.remove('hidden');
+            } else {
+                trickStatus.classList.add('hidden');
+            }
+        }
     }
 
     // Audio system
