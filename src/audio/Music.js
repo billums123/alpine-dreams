@@ -8,18 +8,29 @@ export class Music {
         this.masterGain = null;
         this.isPlaying = false;
         this.oscillators = [];
-        this.volume = 0.3;
+        this.volume = 0.5; // Increased volume
     }
 
     init() {
         // Wait for user interaction to start audio
         const startAudio = () => {
             if (!this.audioContext) {
-                this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
-                this.masterGain = this.audioContext.createGain();
-                this.masterGain.gain.value = this.volume;
-                this.masterGain.connect(this.audioContext.destination);
-                this.play();
+                try {
+                    this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                    this.masterGain = this.audioContext.createGain();
+                    this.masterGain.gain.value = this.volume;
+                    this.masterGain.connect(this.audioContext.destination);
+
+                    // Resume context if suspended (required by some browsers)
+                    if (this.audioContext.state === 'suspended') {
+                        this.audioContext.resume();
+                    }
+
+                    console.log('🎵 Music initialized');
+                    this.play();
+                } catch (e) {
+                    console.warn('Could not initialize music:', e);
+                }
             }
             document.removeEventListener('click', startAudio);
             document.removeEventListener('keydown', startAudio);
@@ -73,8 +84,8 @@ export class Music {
                     // Slow attack and release for smooth pad
                     const now = this.audioContext.currentTime;
                     gain.gain.setValueAtTime(0, now);
-                    gain.gain.linearRampToValueAtTime(0.08, now + 2);
-                    gain.gain.setValueAtTime(0.08, now + 6);
+                    gain.gain.linearRampToValueAtTime(0.15, now + 2);
+                    gain.gain.setValueAtTime(0.15, now + 6);
                     gain.gain.linearRampToValueAtTime(0, now + 8);
 
                     osc.connect(filter);
@@ -107,7 +118,7 @@ export class Music {
         filter.type = 'lowpass';
         filter.frequency.value = 200;
 
-        gain.gain.value = 0.15;
+        gain.gain.value = 0.25;
 
         // Slow LFO for movement
         const lfo = this.audioContext.createOscillator();
@@ -145,7 +156,7 @@ export class Music {
 
                 const now = this.audioContext.currentTime;
                 gain.gain.setValueAtTime(0, now);
-                gain.gain.linearRampToValueAtTime(0.03, now + 0.1);
+                gain.gain.linearRampToValueAtTime(0.06, now + 0.1);
                 gain.gain.exponentialRampToValueAtTime(0.001, now + 2);
 
                 osc.connect(gain);

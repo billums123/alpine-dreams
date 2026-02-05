@@ -52,7 +52,7 @@ export class Skier {
         this.flipRotation = 0; // Current flip angle (radians)
         this.flipVelocity = 0; // Flip angular velocity
         this.isFlipping = false;
-        this.flipDirection = 0; // 1 = backflip, -1 = frontflip
+        this.flipDirection = 0; // 1 = frontflip (forward), -1 = backflip (backward)
         this.trickLanded = false;
 
         // Spin trick state (horizontal rotation)
@@ -640,17 +640,17 @@ export class Skier {
             case 'ArrowUp':
                 this.input.forward = true;
                 this.input.tuck = true;
-                // Initiate frontflip if airborne and not already flipping (W = forward rotation)
+                // Initiate frontflip if airborne (W = rotate forward, head goes down first)
                 if (!this.isGrounded && !this.isFlipping && this.verticalVelocity > 0) {
-                    this.startFlip(-1); // Frontflip (rotate forward)
+                    this.startFlip(1); // Frontflip - positive rotation = forward tumble
                 }
                 break;
             case 'KeyS':
             case 'ArrowDown':
                 this.input.backward = true;
-                // Initiate backflip if airborne and not already flipping (S = backward rotation)
+                // Initiate backflip if airborne (S = rotate backward, head goes back first)
                 if (!this.isGrounded && !this.isFlipping && this.verticalVelocity > 0) {
-                    this.startFlip(1); // Backflip (rotate backward)
+                    this.startFlip(-1); // Backflip - negative rotation = backward tumble
                 }
                 break;
             case 'KeyA':
@@ -820,7 +820,7 @@ export class Skier {
             const numFlips = this.currentTrick.numFlips || 1;
             const flipPoints = [0, 300, 700, 1200, 2000];
             points += flipPoints[Math.min(numFlips, 4)];
-            const flipName = this.currentTrick.flipDirection > 0 ? 'Backflip' : 'Frontflip';
+            const flipName = this.currentTrick.flipDirection > 0 ? 'Frontflip' : 'Backflip';
             trickName = trickName ? `${trickName} ${flipName}` : flipName;
             if (numFlips > 1) trickName = `${numFlips}x ${trickName}`;
             this.stats.totalFlips++;
@@ -1670,13 +1670,13 @@ export class Skier {
             if (this.isFlipping && this.isSpinning) {
                 // Combo trick!
                 const flipProgress = Math.abs(this.flipRotation) / (Math.PI * 2) * 100;
-                const flipName = this.flipDirection > 0 ? 'BACKFLIP' : 'FRONTFLIP';
+                const flipName = this.flipDirection > 0 ? 'FRONTFLIP' : 'BACKFLIP';
                 const spinDegrees = Math.round(this.totalSpinDegrees / 180) * 180;
                 trickStatus.textContent = spinDegrees >= 180 ? `${spinDegrees}° ${flipName}!` : `${flipName}!`;
                 trickStatus.classList.remove('hidden');
             } else if (this.isFlipping) {
                 const flipProgress = Math.abs(this.flipRotation) / (Math.PI * 2) * 100;
-                const trickName = this.flipDirection > 0 ? 'BACKFLIP' : 'FRONTFLIP';
+                const trickName = this.flipDirection > 0 ? 'FRONTFLIP' : 'BACKFLIP';
                 trickStatus.textContent = `${trickName} ${Math.min(100, Math.round(flipProgress))}%`;
                 trickStatus.classList.remove('hidden');
             } else if (this.isSpinning) {
