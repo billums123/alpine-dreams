@@ -20,12 +20,13 @@ export class Skier {
         this.velocity = new THREE.Vector3();
         this.rotation = 0; // Facing direction (radians)
         this.edgeAngle = 0; // Lean angle for turning
+        this.turnMomentum = 0; // Smoothed turn rate for carving feel
 
         // Physics constants - realistic ski physics for large resort
         this.gravity = 45; // Strong gravity for realistic slope acceleration
         this.airGravity = 50; // Snappy jumps
         this.airFriction = 0.003;
-        this.turnSpeed = 1.8; // How fast you can turn
+        this.turnSpeed = 1.6; // How fast you can turn
         this.maxSpeed = 120; // High top speed for long runs
         this.brakeForce = 0.94; // Multiplier when braking
         this.jumpForce = 3.5; // Jump force scaled for terrain
@@ -577,6 +578,7 @@ export class Skier {
         this.isGrounded = true;
         this.isJumping = false;
         this.edgeAngle = 0;
+        this.turnMomentum = 0;
 
         // Reset scoring and stats
         this.score = 0;
@@ -779,6 +781,7 @@ export class Skier {
         this.isGrounded = true;
         this.isJumping = false;
         this.edgeAngle = 0;
+        this.turnMomentum = 0;
         this.flipRotation = 0;
         this.flipVelocity = 0;
         this.isFlipping = false;
@@ -1073,14 +1076,22 @@ export class Skier {
         // SIMPLIFIED SKI PHYSICS - Fast and Fun
         // ============================================
 
-        // TURNING: Edge angle controls turn rate
+        // TURNING: Progressive carving — two-stage smoothing for fluid arcs
         const targetEdge = this.input.left ? 1.0 : (this.input.right ? -1.0 : 0);
-        this.edgeAngle = THREE.MathUtils.lerp(this.edgeAngle, targetEdge, 0.08);
+        // Stage 1: Edge angle builds up gradually (like progressively tipping skis on edge)
+        const edgeLerp = targetEdge !== 0 ? 0.04 : 0.06; // Engage slow, release slightly faster
+        this.edgeAngle = THREE.MathUtils.lerp(this.edgeAngle, targetEdge, edgeLerp);
 
         // Apply turning - only when grounded (airborne turning is handled separately for spins)
         if (Math.abs(this.edgeAngle) > 0.01 && this.isGrounded) {
             const speedMult = 0.5 + Math.min(this.currentSpeed / 30, 1.5);
-            this.rotation += this.edgeAngle * this.turnSpeed * speedMult * delta;
+            const targetTurnRate = this.edgeAngle * this.turnSpeed * speedMult;
+            // Stage 2: Turn momentum smooths the actual rotation rate (like carving an arc)
+            this.turnMomentum = THREE.MathUtils.lerp(this.turnMomentum, targetTurnRate, 0.06);
+            this.rotation += this.turnMomentum * delta;
+        } else {
+            // Decay momentum when airborne or no input
+            this.turnMomentum *= 0.92;
         }
 
         if (this.isGrounded) {
@@ -2586,6 +2597,7 @@ export class Skier {
         this.isGrounded = true;
         this.isJumping = false;
         this.edgeAngle = 0;
+        this.turnMomentum = 0;
 
         // Reset body part positions
         this.resetBodyParts();
