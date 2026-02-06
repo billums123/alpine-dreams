@@ -54,8 +54,8 @@ export class Snow {
             this.positions[i3 + 1] = Math.random() * this.bounds.y;
             this.positions[i3 + 2] = (Math.random() - 0.5) * this.bounds.z * 2;
 
-            // Random size variation
-            sizes[i] = Math.random() * 1.5 + 0.8;
+            // Random size variation — larger for visibility
+            sizes[i] = Math.random() * 2.5 + 1.5;
 
             // Velocity data (flat arrays)
             this.fallSpeeds[i] = Math.random() * 0.3 + 0.2;
@@ -99,12 +99,13 @@ export class Snow {
                 void main() {
                     vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
 
-                    // Size attenuation
-                    gl_PointSize = size * (200.0 / -mvPosition.z);
+                    // Size attenuation — larger multiplier for visible flakes
+                    gl_PointSize = size * (500.0 / -mvPosition.z);
+                    gl_PointSize = clamp(gl_PointSize, 1.0, 12.0);
 
-                    // Fog factor for alpha
-                    float fogFactor = exp(-pow(length(mvPosition.xyz) * 0.01, 2.0));
-                    vAlpha = fogFactor;
+                    // Distance fade
+                    float dist = length(mvPosition.xyz);
+                    vAlpha = smoothstep(2000.0, 100.0, dist);
 
                     gl_Position = projectionMatrix * mvPosition;
                 }
@@ -116,17 +117,17 @@ export class Snow {
 
                 void main() {
                     vec4 texColor = texture2D(pointTexture, gl_PointCoord);
-                    // Moonlit blue tint at night, brighter specks for shimmer
-                    vec3 dayColor = vec3(1.0, 1.0, 1.0);
-                    vec3 nightColor = vec3(0.7, 0.82, 1.0);
+                    // Slight blue-gray tint so flakes are visible against white terrain
+                    vec3 dayColor = vec3(0.82, 0.86, 0.94);
+                    vec3 nightColor = vec3(0.6, 0.72, 0.95);
                     vec3 color = mix(dayColor, nightColor, nightMode);
-                    float alpha = texColor.a * vAlpha * mix(0.8, 1.0, nightMode);
+                    float alpha = texColor.a * vAlpha * 0.9;
                     gl_FragColor = vec4(color, alpha);
                 }
             `,
             transparent: true,
             depthWrite: false,
-            blending: THREE.AdditiveBlending
+            blending: THREE.NormalBlending
         });
 
         this.particles = new THREE.Points(geometry, material);
