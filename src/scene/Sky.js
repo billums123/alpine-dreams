@@ -94,24 +94,40 @@ export class Sky {
             fog: true
         });
 
-        const peaks = [
-            { x: -1800, z: -1800, scale: 3.0, height: 600 },
-            { x: -1200, z: -2000, scale: 2.5, height: 500 },
-            { x: -600, z: -1900, scale: 2.0, height: 550 },
-            { x: 0, z: -2200, scale: 3.5, height: 700 },
-            { x: 600, z: -1900, scale: 2.3, height: 480 },
-            { x: 1200, z: -1800, scale: 2.0, height: 450 },
-            { x: 1800, z: -2000, scale: 2.8, height: 580 },
-            { x: -900, z: -2100, scale: 2.2, height: 520 },
-            { x: 900, z: -2100, scale: 2.6, height: 560 }
+        // Generate peaks around the full perimeter (360 degrees)
+        // Two rings: near ring and far ring for depth
+        const geos = [];
+        const seed = 42;
+
+        const rings = [
+            { distance: 2800, count: 24, minH: 200, maxH: 500, minR: 250, maxR: 500 },
+            { distance: 3600, count: 18, minH: 300, maxH: 700, minR: 350, maxR: 650 }
         ];
 
-        const geos = [];
-        peaks.forEach(peak => {
-            const coneGeo = new THREE.ConeGeometry(200 * peak.scale, peak.height, 6, 1);
-            coneGeo.rotateY(Math.random() * Math.PI);
-            coneGeo.translate(peak.x, peak.height / 2 - 50, peak.z);
-            geos.push(coneGeo);
+        let s = seed;
+        const pseudoRandom = () => {
+            s = (s * 9301 + 49297) % 233280;
+            return s / 233280;
+        };
+
+        rings.forEach(ring => {
+            for (let i = 0; i < ring.count; i++) {
+                // Evenly spaced around perimeter with slight randomization
+                const baseAngle = (i / ring.count) * Math.PI * 2;
+                const angle = baseAngle + (pseudoRandom() - 0.5) * (Math.PI * 2 / ring.count) * 0.6;
+                const dist = ring.distance + (pseudoRandom() - 0.5) * 400;
+
+                const px = Math.cos(angle) * dist;
+                const pz = Math.sin(angle) * dist;
+                const height = ring.minH + pseudoRandom() * (ring.maxH - ring.minH);
+                const radius = ring.minR + pseudoRandom() * (ring.maxR - ring.minR);
+
+                // Smooth cones (16 segments instead of 6)
+                const coneGeo = new THREE.ConeGeometry(radius, height, 16, 1);
+                coneGeo.rotateY(pseudoRandom() * Math.PI);
+                coneGeo.translate(px, height * 0.3, pz);
+                geos.push(coneGeo);
+            }
         });
 
         const merged = mergeGeometries(geos);

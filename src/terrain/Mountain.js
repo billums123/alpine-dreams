@@ -10,14 +10,14 @@
 import * as THREE from 'three';
 
 // Tunable parameters
-const CLUSTER_COUNT_MIN = 3;
-const CLUSTER_COUNT_MAX = 6;
+const CLUSTER_COUNT_MIN = 2;
+const CLUSTER_COUNT_MAX = 4;
 const PEAKS_PER_CLUSTER_MIN = 2;
-const PEAKS_PER_CLUSTER_MAX = 5;
-const EDGE_FALLOFF_START = 0.65; // Fraction of half-extent where fade begins (wider = gentler)
-const EDGE_FALLOFF_END = 0.95;   // Fraction where height reaches zero
-const BASE_ROUGHNESS_AMPLITUDE = 25; // Low-frequency everywhere-roughness
-const VALLEY_DEPTH = 0.35; // How deep valleys between clusters carve (0-1)
+const PEAKS_PER_CLUSTER_MAX = 4;
+const EDGE_FALLOFF_START = 0.55; // Fraction of half-extent where fade begins (wider = gentler)
+const EDGE_FALLOFF_END = 0.92;   // Fraction where height reaches zero
+const BASE_ROUGHNESS_AMPLITUDE = 18; // Low-frequency everywhere-roughness
+const VALLEY_DEPTH = 0.25; // How deep valleys between clusters carve (0-1)
 
 export class Mountain {
     constructor(scene) {
@@ -29,7 +29,7 @@ export class Mountain {
         this.width = 3000;
         this.depth = 4000;
         this.segments = 400;
-        this.maxHeight = 500;
+        this.maxHeight = 280;
 
         // Height map for fast lookups
         this.heightMap = null;
@@ -68,9 +68,9 @@ export class Mountain {
             const cz = (this.seededRandom() - 0.5) * this.depth * 0.75;
 
             // Each cluster has unique character
-            const heightScale = 0.4 + this.seededRandom() * 0.6; // 0.4-1.0 of maxHeight
-            const spreadRadius = 300 + this.seededRandom() * 500; // How wide the cluster extends
-            const sharpness = 0.8 + this.seededRandom() * 1.2; // Ridge sharpness factor
+            const heightScale = 0.5 + this.seededRandom() * 0.5; // 0.5-1.0 of maxHeight
+            const spreadRadius = 500 + this.seededRandom() * 600; // How wide the cluster extends
+            const sharpness = 0.4 + this.seededRandom() * 0.6; // Ridge sharpness factor (gentler)
 
             clusters.push({
                 x: cx, z: cz,
@@ -98,24 +98,24 @@ export class Mountain {
                 const pz = cluster.z + Math.sin(angle) * dist;
 
                 // Height varies per peak; first peak in cluster is tallest
-                const heightFactor = i === 0 ? (0.7 + this.seededRandom() * 0.3) : (0.2 + this.seededRandom() * 0.5);
+                const heightFactor = i === 0 ? (0.5 + this.seededRandom() * 0.3) : (0.15 + this.seededRandom() * 0.3);
                 const height = this.maxHeight * cluster.heightScale * heightFactor;
 
-                // Radius varies
-                const radius = 200 + this.seededRandom() * 400;
+                // Radius varies — wide for skiable slopes
+                const radius = 400 + this.seededRandom() * 500;
 
                 peaks.push({ x: px, z: pz, height, radius });
             }
         }
 
-        // Add a few scattered isolated peaks for variety
+        // Add a few scattered isolated hills for variety
         const numIsolated = 2 + Math.floor(this.seededRandom() * 3);
         for (let i = 0; i < numIsolated; i++) {
             peaks.push({
                 x: (this.seededRandom() - 0.5) * this.width * 0.8,
                 z: (this.seededRandom() - 0.5) * this.depth * 0.8,
-                height: 30 + this.seededRandom() * 80,
-                radius: 150 + this.seededRandom() * 300
+                height: 20 + this.seededRandom() * 50,
+                radius: 300 + this.seededRandom() * 400
             });
         }
 
@@ -145,8 +145,8 @@ export class Mountain {
                     startX, startZ,
                     midX, midZ,
                     endX, endZ,
-                    height: 20 + this.seededRandom() * 60 * cluster.sharpness,
-                    width: 60 + this.seededRandom() * 180
+                    height: 10 + this.seededRandom() * 30 * cluster.sharpness,
+                    width: 120 + this.seededRandom() * 250
                 });
             }
         }
@@ -169,8 +169,8 @@ export class Mountain {
                         startX: a.x, startZ: a.z,
                         midX, midZ,
                         endX: b.x, endZ: b.z,
-                        height: 15 + this.seededRandom() * 30,
-                        width: 80 + this.seededRandom() * 150
+                        height: 10 + this.seededRandom() * 20,
+                        width: 150 + this.seededRandom() * 200
                     });
                 }
             }
@@ -182,7 +182,7 @@ export class Mountain {
     // ===== CLIFF GENERATION =====
     generateCliffs() {
         const cliffs = [];
-        const numCliffs = 4 + Math.floor(this.seededRandom() * 6);
+        const numCliffs = 2 + Math.floor(this.seededRandom() * 4);
 
         for (let i = 0; i < numCliffs; i++) {
             // Place cliffs near cluster centers for realism
@@ -194,9 +194,9 @@ export class Mountain {
                 x: cluster.x + Math.cos(angle) * dist,
                 z: cluster.z + Math.sin(angle) * dist,
                 angle: angle + Math.PI / 2 + (this.seededRandom() - 0.5) * 0.5,
-                length: 60 + this.seededRandom() * 180,
-                height: 15 + this.seededRandom() * 50,
-                steepness: 0.8 + this.seededRandom() * 0.2
+                length: 60 + this.seededRandom() * 120,
+                height: 8 + this.seededRandom() * 22,
+                steepness: 0.6 + this.seededRandom() * 0.3
             });
         }
 
@@ -241,6 +241,28 @@ export class Mountain {
         this.mesh.name = 'terrain';
 
         this.scene.add(this.mesh);
+
+        // Add ground plane that extends far beyond terrain to hide world edges
+        this.createGroundPlane();
+    }
+
+    createGroundPlane() {
+        // Large plane at y=0 extending well beyond terrain — fog hides the far edges
+        const groundGeo = new THREE.PlaneGeometry(15000, 15000, 1, 1);
+        groundGeo.rotateX(-Math.PI / 2);
+
+        const groundMat = new THREE.MeshStandardMaterial({
+            color: 0xe8f0f5,
+            roughness: 0.9,
+            metalness: 0.0,
+            fog: true
+        });
+
+        this.groundPlane = new THREE.Mesh(groundGeo, groundMat);
+        this.groundPlane.position.y = -0.5; // Slightly below terrain to avoid z-fighting
+        this.groundPlane.receiveShadow = true;
+        this.groundPlane.name = 'groundPlane';
+        this.scene.add(this.groundPlane);
     }
 
     generateHeightMap() {
@@ -254,7 +276,7 @@ export class Mountain {
             }
         }
 
-        this.smoothHeightMap(3);
+        this.smoothHeightMap(5);
     }
 
     calculateHeight(x, z) {
@@ -287,12 +309,12 @@ export class Mountain {
         // Medium-scale hills
         const hillScale = 0.003;
         const hills = this.fbmNoise(warpedX * hillScale + this.seed * 0.2, warpedZ * hillScale + 200, 3, 0.5, 2.0);
-        height += hills * 18 * edgeFalloff;
+        height += hills * 12 * edgeFalloff;
 
         // Fine detail
         const detailScale = 0.006;
         const detail = this.fbmNoise(warpedX * detailScale + this.seed * 0.4, warpedZ * detailScale + 300, 2, 0.5, 2.0);
-        height += detail * 8 * edgeFalloff;
+        height += detail * 5 * edgeFalloff;
 
         // ===== 3. CLUSTER-BASED MOUNTAIN HEIGHTS =====
         // Each cluster contributes a regional elevation boost
