@@ -19,11 +19,11 @@ export class Snow {
         this.wobblePhase = null;  // per-particle wobble phase offset
         this.wobbleSpeed = null;  // per-particle wobble speed
 
-        // Snow bounds (must encompass camera at y~2000)
+        // Snow bounds — particles are in local space, mesh follows camera x,z
         this.bounds = {
-            x: 2000,
+            x: 1200,
             y: 2500,
-            z: 2000
+            z: 1200
         };
 
         // Blizzard mode
@@ -85,47 +85,14 @@ export class Snow {
 
         const texture = new THREE.CanvasTexture(canvas);
 
-        const material = new THREE.ShaderMaterial({
-            uniforms: {
-                pointTexture: { value: texture },
-                fogColor: { value: this.scene.fog ? this.scene.fog.color : new THREE.Color(0x9bb5ce) },
-                fogDensity: { value: this.scene.fog ? this.scene.fog.density : 0.008 },
-                nightMode: { value: 0.0 }
-            },
-            vertexShader: `
-                attribute float size;
-                varying float vAlpha;
-
-                void main() {
-                    vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
-
-                    // Size attenuation — larger multiplier for visible flakes
-                    gl_PointSize = size * (500.0 / -mvPosition.z);
-                    gl_PointSize = clamp(gl_PointSize, 1.0, 12.0);
-
-                    // Distance fade
-                    float dist = length(mvPosition.xyz);
-                    vAlpha = smoothstep(2000.0, 100.0, dist);
-
-                    gl_Position = projectionMatrix * mvPosition;
-                }
-            `,
-            fragmentShader: `
-                uniform sampler2D pointTexture;
-                uniform float nightMode;
-                varying float vAlpha;
-
-                void main() {
-                    vec4 texColor = texture2D(pointTexture, gl_PointCoord);
-                    // Slight blue-gray tint so flakes are visible against white terrain
-                    vec3 dayColor = vec3(0.82, 0.86, 0.94);
-                    vec3 nightColor = vec3(0.6, 0.72, 0.95);
-                    vec3 color = mix(dayColor, nightColor, nightMode);
-                    float alpha = texColor.a * vAlpha * 0.9;
-                    gl_FragColor = vec4(color, alpha);
-                }
-            `,
+        // Simple PointsMaterial — reliable and visible
+        const material = new THREE.PointsMaterial({
+            size: 4,
+            sizeAttenuation: true,
+            map: texture,
             transparent: true,
+            opacity: 0.8,
+            color: 0xdde4f0,
             depthWrite: false,
             blending: THREE.NormalBlending
         });
@@ -225,8 +192,8 @@ export class Snow {
     }
 
     setNightMode(enabled) {
-        if (this.particles && this.particles.material.uniforms) {
-            this.particles.material.uniforms.nightMode.value = enabled ? 1.0 : 0.0;
+        if (this.particles && this.particles.material) {
+            this.particles.material.color.setHex(enabled ? 0x8899bb : 0xdde4f0);
         }
     }
 
