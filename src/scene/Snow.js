@@ -19,11 +19,11 @@ export class Snow {
         this.wobblePhase = null;  // per-particle wobble phase offset
         this.wobbleSpeed = null;  // per-particle wobble speed
 
-        // Snow bounds (large resort scale)
+        // Snow bounds (must encompass camera at y~2000)
         this.bounds = {
-            x: 1500,
-            y: 500,
-            z: 1500
+            x: 2000,
+            y: 2500,
+            z: 2000
         };
 
         // Blizzard mode
