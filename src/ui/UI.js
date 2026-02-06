@@ -258,7 +258,11 @@ export class UI {
     }
 
     onMouseUp() {
-        this.isSculpting = false;
+        if (this.isSculpting) {
+            this.isSculpting = false;
+            // Finalize: recompute normals and vertex colors once
+            this.mountain.finalizeSculpt();
+        }
     }
 
     setupQuickActions() {

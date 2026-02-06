@@ -37,8 +37,9 @@ export class Mountain {
 
         // Sculpting state
         this.sculptMode = null;
-        this.sculptRadius = 60;
-        this.sculptStrength = 2.0;
+        this.sculptRadius = 150;
+        this.sculptStrength = 6.0;
+        this.sculptDirty = false; // true when sculpt needs finalize (normals + colors)
 
         // Noise seed
         this.seed = Math.random() * 1000;
@@ -642,17 +643,20 @@ export class Mountain {
     sculpt(x, z, mode, delta = 1) {
         const hmX = Math.round((x / this.width + 0.5) * this.segments);
         const hmZ = Math.round((z / this.depth + 0.5) * this.segments);
-        const radiusInCells = Math.ceil(this.sculptRadius / (this.width / this.segments));
+        const cellW = this.width / this.segments;
+        const cellD = this.depth / this.segments;
+        const radiusInCellsX = Math.ceil(this.sculptRadius / cellW);
+        const radiusInCellsZ = Math.ceil(this.sculptRadius / cellD);
 
-        for (let dz = -radiusInCells; dz <= radiusInCells; dz++) {
-            for (let dx = -radiusInCells; dx <= radiusInCells; dx++) {
+        for (let dz = -radiusInCellsZ; dz <= radiusInCellsZ; dz++) {
+            for (let dx = -radiusInCellsX; dx <= radiusInCellsX; dx++) {
                 const nx = hmX + dx;
                 const nz = hmZ + dz;
 
                 if (nx < 0 || nx > this.segments || nz < 0 || nz > this.segments) continue;
 
-                const worldDx = dx * (this.width / this.segments);
-                const worldDz = dz * (this.depth / this.segments);
+                const worldDx = dx * cellW;
+                const worldDz = dz * cellD;
                 const dist = Math.sqrt(worldDx * worldDx + worldDz * worldDz);
                 if (dist > this.sculptRadius) continue;
 
@@ -693,10 +697,32 @@ export class Mountain {
             }
         }
 
-        this.applyHeightMap();
+        // Fast path: only update geometry positions in the affected region
+        const positions = this.geometry.attributes.position.array;
+        const rowSize = this.segments + 1;
+        const minRow = Math.max(0, hmZ - radiusInCellsZ);
+        const maxRow = Math.min(this.segments, hmZ + radiusInCellsZ);
+        const minCol = Math.max(0, hmX - radiusInCellsX);
+        const maxCol = Math.min(this.segments, hmX + radiusInCellsX);
+
+        for (let row = minRow; row <= maxRow; row++) {
+            for (let col = minCol; col <= maxCol; col++) {
+                const vertIdx = (row * rowSize + col) * 3;
+                positions[vertIdx + 1] = this.heightMap[row * this.heightMapSize + col];
+            }
+        }
+
+        this.geometry.attributes.position.needsUpdate = true;
+        this.sculptDirty = true;
+    }
+
+    // Call after sculpting ends (mouseup) to recompute normals and colors
+    finalizeSculpt() {
+        if (!this.sculptDirty) return;
         this.geometry.computeVertexNormals();
         this.applyVertexColors();
         this.geometry.attributes.color.needsUpdate = true;
+        this.sculptDirty = false;
     }
 
     // ===== UTILITY =====
