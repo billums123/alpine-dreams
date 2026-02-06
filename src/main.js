@@ -110,12 +110,15 @@ class AlpineDreams {
                 });
             }
 
-            // Day/night toggle via N key
+            // Day/night toggle via N key, blizzard via M key
             window.addEventListener('keydown', (e) => {
+                if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
                 if (e.key === 'n' || e.key === 'N') {
-                    // Don't hijack typing in input fields
-                    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
                     this.toggleNightMode();
+                }
+                if (e.key === 'm' || e.key === 'M') {
+                    const blizzard = this.snow.toggleBlizzard();
+                    console.log(blizzard ? '🌨️ Blizzard ON' : '❄️ Blizzard OFF');
                 }
             });
 

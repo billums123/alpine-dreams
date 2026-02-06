@@ -25,6 +25,12 @@ export class Snow {
             y: 500,
             z: 1500
         };
+
+        // Blizzard mode
+        this.isBlizzard = false;
+        this.blizzardWindX = 0;
+        this.blizzardWindZ = 0;
+        this.blizzardFallMultiplier = 1;
     }
 
     create() {
@@ -137,17 +143,21 @@ export class Snow {
         const boundsY = this.bounds.y;
         const boundsZ = this.bounds.z;
         const pos = this.positions;
+        const windX = this.blizzardWindX;
+        const windZ = this.blizzardWindZ;
+        const fallMult = this.blizzardFallMultiplier;
 
         for (let i = 0; i < this.particleCount; i++) {
             const i3 = i * 3;
 
             // Apply gravity and drift
-            pos[i3 + 1] -= this.fallSpeeds[i] * dt10;
+            pos[i3 + 1] -= this.fallSpeeds[i] * fallMult * dt10;
 
-            // Gentle wobble
-            const wobble = Math.sin(time * this.wobbleSpeed[i] + this.wobblePhase[i]) * 0.05;
-            pos[i3] += (this.driftX[i] + wobble) * dt10;
-            pos[i3 + 2] += this.driftZ[i] * dt10;
+            // Wobble (reduced in blizzard — wind dominates)
+            const wobbleAmt = this.isBlizzard ? 0.02 : 0.05;
+            const wobble = Math.sin(time * this.wobbleSpeed[i] + this.wobblePhase[i]) * wobbleAmt;
+            pos[i3] += (this.driftX[i] + wobble + windX) * dt10;
+            pos[i3 + 2] += (this.driftZ[i] + windZ) * dt10;
 
             // Reset particle when it falls below ground
             if (pos[i3 + 1] < -2) {
@@ -170,6 +180,12 @@ export class Snow {
             }
         }
 
+        // Slowly shift blizzard wind direction for gusts
+        if (this.isBlizzard) {
+            this.blizzardWindX = Math.sin(time * 0.15) * 0.8 + 0.5;
+            this.blizzardWindZ = Math.cos(time * 0.12) * 0.4;
+        }
+
         this.particles.geometry.attributes.position.needsUpdate = true;
     }
 
@@ -177,6 +193,28 @@ export class Snow {
         this.enabled = !this.enabled;
         this.particles.visible = this.enabled;
         return this.enabled;
+    }
+
+    toggleBlizzard() {
+        this.isBlizzard = !this.isBlizzard;
+
+        if (this.isBlizzard) {
+            this.blizzardFallMultiplier = 3.0;
+            // Wind will be dynamically updated in update()
+            this.blizzardWindX = 0.5;
+            this.blizzardWindZ = 0.3;
+        } else {
+            this.blizzardFallMultiplier = 1;
+            this.blizzardWindX = 0;
+            this.blizzardWindZ = 0;
+        }
+
+        // Increase fog during blizzard
+        if (this.scene.fog) {
+            this.scene.fog.density = this.isBlizzard ? 0.00035 : 0.00018;
+        }
+
+        return this.isBlizzard;
     }
 
     setNightMode(enabled) {
