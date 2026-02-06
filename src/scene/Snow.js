@@ -134,8 +134,14 @@ export class Snow {
         this.scene.add(this.particles);
     }
 
-    update(delta) {
+    update(delta, camera) {
         if (!this.enabled || !this.particles) return;
+
+        // Follow camera horizontally so snow always surrounds the viewer
+        if (camera) {
+            this.particles.position.x = camera.position.x;
+            this.particles.position.z = camera.position.z;
+        }
 
         const time = performance.now() * 0.001;
         const dt10 = delta * 10;

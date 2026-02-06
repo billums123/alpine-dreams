@@ -165,7 +165,7 @@ class AlpineDreams {
     update(delta) {
         // Update snow particles
         if (this.snow) {
-            this.snow.update(delta);
+            this.snow.update(delta, this.sceneManager.camera);
         }
 
         // Update sky (star twinkle, cloud drift)
