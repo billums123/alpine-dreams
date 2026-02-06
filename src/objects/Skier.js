@@ -1196,7 +1196,7 @@ export class Skier {
             this.currentSpeed = Math.sqrt(this.velocity.x * this.velocity.x + this.velocity.z * this.velocity.z);
 
             // SPIN TRICKS - A/D to spin while airborne
-            const HORIZONTAL_SPIN_MULTIPLIER = 2.0;
+            const HORIZONTAL_SPIN_MULTIPLIER = 3.5;
             if (Math.abs(this.edgeAngle) > 0.3) {
                 // Start or continue spinning
                 if (!this.isSpinning) {
@@ -1204,10 +1204,10 @@ export class Skier {
                     this.spinRotation = 0;
                     this.totalSpinDegrees = 0;
                 }
-                // Add spin velocity based on input (scaled for faster response)
+                // Add spin velocity based on input
                 this.spinVelocity += this.edgeAngle * 15 * HORIZONTAL_SPIN_MULTIPLIER * delta;
-                // Cap spin speed (higher cap for snappier spins)
-                this.spinVelocity = THREE.MathUtils.clamp(this.spinVelocity, -20, 20);
+                // Cap spin speed
+                this.spinVelocity = THREE.MathUtils.clamp(this.spinVelocity, -35, 35);
             }
 
             // Apply spin rotation
@@ -1216,7 +1216,7 @@ export class Skier {
                 this.totalSpinDegrees = Math.abs(this.spinRotation) * (180 / Math.PI);
 
                 // Slight air resistance on spin
-                this.spinVelocity *= 0.98;
+                this.spinVelocity *= 0.99;
             }
 
             // Also allow slight trajectory adjustment
