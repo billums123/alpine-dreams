@@ -17,7 +17,7 @@ export class SceneManager {
     async init() {
         // Create scene
         this.scene = new THREE.Scene();
-        this.scene.fog = new THREE.FogExp2(0x9bb5ce, 0.00035); // Denser fog to soften world boundary
+        this.scene.fog = new THREE.FogExp2(0x9bb5ce, 0.00018);
 
         // Create camera - positioned to see entire mountain
         this.camera = new THREE.PerspectiveCamera(
@@ -42,7 +42,7 @@ export class SceneManager {
         this.renderer.shadowMap.enabled = true;
         this.renderer.shadowMap.type = THREE.PCFShadowMap;
         this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-        this.renderer.toneMappingExposure = 0.8;
+        this.renderer.toneMappingExposure = 1.0;
         this.renderer.outputColorSpace = THREE.SRGBColorSpace;
 
         // Set clear color (will be covered by sky)

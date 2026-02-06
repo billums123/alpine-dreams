@@ -147,13 +147,15 @@ export class Sky {
         });
 
         const cloudPositions = [
-            { x: -600, y: 450, z: -400, scale: 8 },
-            { x: 400, y: 500, z: -600, scale: 10 },
-            { x: 900, y: 420, z: -200, scale: 7 },
-            { x: -300, y: 480, z: 400, scale: 9 },
-            { x: 700, y: 520, z: 300, scale: 8 },
-            { x: -800, y: 460, z: 100, scale: 7 },
-            { x: 200, y: 550, z: -800, scale: 11 }
+            { x: -800, y: 800, z: -600, scale: 10, drift: 0.3 },
+            { x: 500, y: 900, z: -900, scale: 12, drift: 0.2 },
+            { x: 1200, y: 750, z: -400, scale: 9, drift: 0.35 },
+            { x: -400, y: 850, z: 200, scale: 11, drift: 0.25 },
+            { x: 900, y: 950, z: 100, scale: 10, drift: 0.15 },
+            { x: -1100, y: 820, z: -100, scale: 9, drift: 0.3 },
+            { x: 300, y: 1000, z: -1200, scale: 13, drift: 0.2 },
+            { x: -600, y: 880, z: -1000, scale: 8, drift: 0.28 },
+            { x: 1400, y: 780, z: -700, scale: 10, drift: 0.22 }
         ];
 
         const puffs = [
@@ -176,6 +178,8 @@ export class Sky {
                 const cloudMesh = new THREE.Mesh(mergedCloud, cloudMaterial);
                 cloudMesh.scale.setScalar(pos.scale);
                 cloudMesh.position.set(pos.x, pos.y, pos.z);
+                cloudMesh.userData.driftSpeed = pos.drift || 0.2;
+                cloudMesh.userData.startX = pos.x;
                 this.scene.add(cloudMesh);
                 this.clouds.push(cloudMesh);
             }
@@ -299,8 +303,13 @@ export class Sky {
 
     // Animate clouds and stars
     update(delta) {
-        this.clouds.forEach((cloud, i) => {
-            cloud.position.x += Math.sin(Date.now() * 0.0001 + i) * 0.01;
+        // Gentle cloud drift
+        this.clouds.forEach((cloud) => {
+            cloud.position.x += cloud.userData.driftSpeed * delta;
+            // Wrap around when cloud drifts too far
+            if (cloud.position.x > cloud.userData.startX + 2000) {
+                cloud.position.x = cloud.userData.startX - 2000;
+            }
         });
 
         // Update star twinkle

@@ -148,14 +148,14 @@ class AlpineDreams {
         const renderer = this.sceneManager.renderer;
         if (this.isNight) {
             scene.fog.color.setHex(0x0a1525);
-            scene.fog.density = 0.00045;
+            scene.fog.density = 0.00025;
             renderer.setClearColor(0x050a15);
-            renderer.toneMappingExposure = 0.6;
+            renderer.toneMappingExposure = 0.7;
         } else {
             scene.fog.color.setHex(0x9bb5ce);
-            scene.fog.density = 0.00035;
+            scene.fog.density = 0.00018;
             renderer.setClearColor(0x87ceeb);
-            renderer.toneMappingExposure = 0.8;
+            renderer.toneMappingExposure = 1.0;
         }
     }
 
