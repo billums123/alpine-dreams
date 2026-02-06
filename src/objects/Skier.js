@@ -146,6 +146,7 @@ export class Skier {
         this.cameraOffset = new THREE.Vector3(0, 6, 15);
         this.cameraLookAhead = 5;
         this.cameraSmoothness = 0.06;
+        this.cameraYaw = 0; // Smoothed camera angle (follows movement direction, not facing)
 
         // Stored camera state for restoration
         this.savedCameraPosition = null;
@@ -579,6 +580,7 @@ export class Skier {
         this.isJumping = false;
         this.edgeAngle = 0;
         this.turnMomentum = 0;
+        this.cameraYaw = this.rotation; // Initialize camera behind facing direction
 
         // Reset scoring and stats
         this.score = 0;
@@ -782,6 +784,7 @@ export class Skier {
         this.isJumping = false;
         this.edgeAngle = 0;
         this.turnMomentum = 0;
+        this.cameraYaw = this.rotation;
         this.flipRotation = 0;
         this.flipVelocity = 0;
         this.isFlipping = false;
@@ -879,8 +882,19 @@ export class Skier {
                 this.awardTrickPoints(true); // Clean landing - only award for 180+
             }
 
+            // Preserve velocity direction through spin landing
+            const preSpinVelX = this.velocity.x;
+            const preSpinVelZ = this.velocity.z;
+
             // Apply the spin to actual rotation (land facing new direction)
             this.rotation += this.spinRotation;
+
+            // Recompute currentSpeed as signed projection of preserved velocity onto new facing
+            const newForward = new THREE.Vector3(Math.sin(this.rotation), 0, Math.cos(this.rotation));
+            this.currentSpeed = preSpinVelX * newForward.x + preSpinVelZ * newForward.z;
+            // Velocity stays in the original movement direction
+            this.velocity.x = preSpinVelX;
+            this.velocity.z = preSpinVelZ;
 
             // Reset spin state
             this.isSpinning = false;
@@ -1035,8 +1049,8 @@ export class Skier {
 
         // TRACK STATISTICS
         // Max speed
-        if (this.currentSpeed > this.stats.maxSpeed) {
-            this.stats.maxSpeed = this.currentSpeed;
+        if (Math.abs(this.currentSpeed) > this.stats.maxSpeed) {
+            this.stats.maxSpeed = Math.abs(this.currentSpeed);
         }
 
         // Air time tracking
@@ -1077,7 +1091,10 @@ export class Skier {
         // ============================================
 
         // TURNING: Progressive carving — two-stage smoothing for fluid arcs
-        const targetEdge = this.input.left ? 1.0 : (this.input.right ? -1.0 : 0);
+        // Invert controls when switch so left/right stay camera-relative
+        const isSwitch = this.currentSpeed < -0.5;
+        const rawEdge = this.input.left ? 1.0 : (this.input.right ? -1.0 : 0);
+        const targetEdge = isSwitch ? -rawEdge : rawEdge;
         // Stage 1: Edge angle builds up gradually (like progressively tipping skis on edge)
         const edgeLerp = targetEdge !== 0 ? 0.04 : 0.06; // Engage slow, release slightly faster
         this.edgeAngle = THREE.MathUtils.lerp(this.edgeAngle, targetEdge, edgeLerp);
@@ -1102,18 +1119,17 @@ export class Skier {
             // Gravity acceleration = gravity * steepness * alignment with fall line
             const gravityAccel = this.gravity * slopeSteepness * downhillAlignment;
 
-            // Auto-align toward fall line when slow (skier naturally points downhill)
-            if (this.currentSpeed < 5 && slopeSteepness > 0.02 && slopeDir.lengthSq() > 0.0001) {
+            // Auto-align toward fall line when slow (only when not switch)
+            if (Math.abs(this.currentSpeed) < 5 && this.currentSpeed >= 0 && slopeSteepness > 0.02 && slopeDir.lengthSq() > 0.0001) {
                 const fallLineAngle = Math.atan2(slopeDir.x, slopeDir.z);
                 const angleDiff = fallLineAngle - this.rotation;
-                // Normalize angle difference
                 const normalizedDiff = Math.atan2(Math.sin(angleDiff), Math.cos(angleDiff));
                 this.rotation += normalizedDiff * 0.5 * delta;
             }
 
             // Always add base acceleration on any slope to prevent getting stuck
             const minAccel = slopeSteepness * 12;
-            const effectiveAccel = this.currentSpeed < 5 ? Math.max(gravityAccel, minAccel) : gravityAccel;
+            const effectiveAccel = Math.abs(this.currentSpeed) < 5 ? Math.max(gravityAccel, minAccel) : gravityAccel;
 
             this.currentSpeed += effectiveAccel * delta;
 
@@ -1139,8 +1155,9 @@ export class Skier {
             }
 
             // Speed limits - tucking allows higher terminal velocity
+            // Negative speed = switch skiing (moving backward relative to facing)
             const effectiveMaxSpeed = this.isTucking ? this.maxSpeed * 1.3 : this.maxSpeed;
-            this.currentSpeed = Math.max(0, Math.min(this.currentSpeed, effectiveMaxSpeed));
+            this.currentSpeed = Math.max(-effectiveMaxSpeed, Math.min(this.currentSpeed, effectiveMaxSpeed));
 
             // Convert speed + direction to velocity
             this.velocity.x = forward.x * this.currentSpeed;
@@ -1771,11 +1788,24 @@ export class Skier {
             return;
         }
 
-        // Normal skiing camera
+        // Normal skiing camera — follows MOVEMENT direction, not facing direction
+        // This keeps the camera stable during switch skiing (no snap after spins)
+
+        // Compute movement direction angle from velocity
+        const velLenSq = this.velocity.x * this.velocity.x + this.velocity.z * this.velocity.z;
+        if (velLenSq > 1) {
+            const moveAngle = Math.atan2(this.velocity.x, this.velocity.z);
+            // Smooth cameraYaw toward movement direction (handles angle wrapping)
+            let angleDiff = moveAngle - this.cameraYaw;
+            angleDiff = Math.atan2(Math.sin(angleDiff), Math.cos(angleDiff)); // normalize to -π..π
+            this.cameraYaw += angleDiff * 0.04; // Very smooth follow
+        }
+
+        // Position camera behind movement direction using cameraYaw
         const backDir = new THREE.Vector3(
-            -Math.sin(this.rotation),
+            -Math.sin(this.cameraYaw),
             0,
-            -Math.cos(this.rotation)
+            -Math.cos(this.cameraYaw)
         );
 
         // Camera behind and above skier
@@ -1791,7 +1821,6 @@ export class Skier {
         }
 
         // Keep camera steady relative to ground during jumps
-        // Don't follow skier's Y position exactly when airborne
         if (!this.isGrounded) {
             const groundHeight = this.mountain.getHeightAt(this.position.x, this.position.z);
             targetCameraPos.y = Math.max(targetCameraPos.y, groundHeight + this.cameraOffset.y);
@@ -1801,13 +1830,13 @@ export class Skier {
         const smoothness = this.isGrounded ? this.cameraSmoothness : this.cameraSmoothness * 0.5;
         this.camera.position.lerp(targetCameraPos, smoothness);
 
-        // Look at skier (at body height, not feet)
+        // Look at skier — use movement direction for look-ahead, not facing
         lookTarget = this.position.clone();
-        lookTarget.y += 1.0; // Look at skier's torso
+        lookTarget.y += 1.0;
         lookTarget.add(new THREE.Vector3(
-            Math.sin(this.rotation) * this.cameraLookAhead,
+            Math.sin(this.cameraYaw) * this.cameraLookAhead,
             0,
-            Math.cos(this.rotation) * this.cameraLookAhead
+            Math.cos(this.cameraYaw) * this.cameraLookAhead
         ));
 
         this.camera.lookAt(lookTarget);
@@ -1815,7 +1844,7 @@ export class Skier {
 
     updateHUD() {
         // Convert speed to mph (approximate scaling: internal units * 2.24)
-        const speedMph = Math.round(this.currentSpeed * 2.24);
+        const speedMph = Math.round(Math.abs(this.currentSpeed) * 2.24);
         const speedEl = document.getElementById('speed-value');
         if (speedEl) speedEl.textContent = speedMph;
 
