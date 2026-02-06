@@ -25,7 +25,7 @@ export class Skier {
         this.gravity = 45; // Strong gravity for realistic slope acceleration
         this.airGravity = 50; // Snappy jumps
         this.airFriction = 0.003;
-        this.turnSpeed = 2.5; // How fast you can turn
+        this.turnSpeed = 1.8; // How fast you can turn
         this.maxSpeed = 120; // High top speed for long runs
         this.brakeForce = 0.94; // Multiplier when braking
         this.jumpForce = 3.5; // Jump force scaled for terrain
@@ -1075,7 +1075,7 @@ export class Skier {
 
         // TURNING: Edge angle controls turn rate
         const targetEdge = this.input.left ? 1.0 : (this.input.right ? -1.0 : 0);
-        this.edgeAngle = THREE.MathUtils.lerp(this.edgeAngle, targetEdge, 0.15);
+        this.edgeAngle = THREE.MathUtils.lerp(this.edgeAngle, targetEdge, 0.08);
 
         // Apply turning - only when grounded (airborne turning is handled separately for spins)
         if (Math.abs(this.edgeAngle) > 0.01 && this.isGrounded) {
