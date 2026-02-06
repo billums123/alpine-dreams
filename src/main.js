@@ -30,6 +30,7 @@ class AlpineDreams {
         this.music = null;
 
         this.isInitialized = false;
+        this.isNight = false;
     }
 
     async init() {
@@ -79,6 +80,7 @@ class AlpineDreams {
                 this.sceneManager.camera,
                 this.cameraControls
             );
+            this.skier.trees = this.trees;
 
             // Initialize UI
             this.ui = new UI(this.objectPlacer, this.snow, this.sceneManager, this.mountain, this.skier, this.trees, this.cameraControls);
@@ -108,6 +110,15 @@ class AlpineDreams {
                 });
             }
 
+            // Day/night toggle via N key
+            window.addEventListener('keydown', (e) => {
+                if (e.key === 'n' || e.key === 'N') {
+                    // Don't hijack typing in input fields
+                    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+                    this.toggleNightMode();
+                }
+            });
+
             // Start render loop
             this.sceneManager.onUpdate = (delta) => this.update(delta);
             this.sceneManager.start();
@@ -125,10 +136,38 @@ class AlpineDreams {
         }
     }
 
+    toggleNightMode() {
+        this.isNight = !this.isNight;
+
+        if (this.lighting) this.lighting.setNightMode(this.isNight);
+        if (this.sky) this.sky.setNightMode(this.isNight);
+        if (this.snow) this.snow.setNightMode(this.isNight);
+
+        // Update fog and clear color
+        const scene = this.sceneManager.scene;
+        const renderer = this.sceneManager.renderer;
+        if (this.isNight) {
+            scene.fog.color.setHex(0x0a1525);
+            scene.fog.density = 0.00045;
+            renderer.setClearColor(0x050a15);
+            renderer.toneMappingExposure = 0.6;
+        } else {
+            scene.fog.color.setHex(0x9bb5ce);
+            scene.fog.density = 0.00035;
+            renderer.setClearColor(0x87ceeb);
+            renderer.toneMappingExposure = 0.8;
+        }
+    }
+
     update(delta) {
         // Update snow particles
         if (this.snow) {
             this.snow.update(delta);
+        }
+
+        // Update sky (star twinkle, cloud drift)
+        if (this.sky) {
+            this.sky.update(delta);
         }
 
         // Update skier (if active, handles its own camera)

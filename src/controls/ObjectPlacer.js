@@ -469,29 +469,38 @@ export class ObjectPlacer {
     autoGenerate() {
         this.clearAll();
 
-        // Scale for 600x600 terrain
-        const scale = 5;
+        // Scale positions for large resort terrain
+        const w = this.mountain.width;
+        const d = this.mountain.depth;
 
-        // Add some ski lifts
+        // Add ski lifts running up the mountain
         const lift1 = this.skiLift.createLift(
-            new THREE.Vector3(-80, this.mountain.getHeightAt(-80, 100), 100),
-            new THREE.Vector3(-40, this.mountain.getHeightAt(-40, -100), -100),
+            new THREE.Vector3(-400, this.mountain.getHeightAt(-400, 500), 500),
+            new THREE.Vector3(-200, this.mountain.getHeightAt(-200, -600), -600),
             false
         );
         this.placedObjects.push({ type: 'ski-lift', object: lift1 });
 
         const gondola = this.skiLift.createLift(
-            new THREE.Vector3(100, this.mountain.getHeightAt(100, 80), 80),
-            new THREE.Vector3(120, this.mountain.getHeightAt(120, -80), -80),
+            new THREE.Vector3(500, this.mountain.getHeightAt(500, 400), 400),
+            new THREE.Vector3(300, this.mountain.getHeightAt(300, -500), -500),
             true
         );
         this.placedObjects.push({ type: 'gondola', object: gondola });
 
+        // Add a second lift on the other side
+        const lift2 = this.skiLift.createLift(
+            new THREE.Vector3(0, this.mountain.getHeightAt(0, 300), 300),
+            new THREE.Vector3(-100, this.mountain.getHeightAt(-100, -800), -800),
+            false
+        );
+        this.placedObjects.push({ type: 'ski-lift', object: lift2 });
+
         // Add lodges at base area
         const lodgePositions = [
-            { x: 0, z: 150 },
-            { x: -100, z: 130 },
-            { x: 120, z: 140 }
+            { x: 0, z: 800 },
+            { x: -500, z: 700 },
+            { x: 600, z: 750 }
         ];
 
         lodgePositions.forEach(pos => {
@@ -506,11 +515,11 @@ export class ObjectPlacer {
 
         // Add flags along ski runs
         const flagPositions = [
-            { x: -30, z: -80 },
-            { x: -15, z: 0 },
-            { x: 25, z: 80 },
-            { x: 110, z: -30 },
-            { x: 90, z: 50 }
+            { x: -150, z: -400 },
+            { x: -75, z: 0 },
+            { x: 125, z: 400 },
+            { x: 550, z: -150 },
+            { x: 450, z: 250 }
         ];
 
         flagPositions.forEach(pos => {
@@ -524,8 +533,8 @@ export class ObjectPlacer {
 
         // Add snowmen near lodges
         const snowmanPositions = [
-            { x: 25, z: 140 },
-            { x: -120, z: 120 }
+            { x: 125, z: 750 },
+            { x: -600, z: 650 }
         ];
 
         snowmanPositions.forEach(pos => {
@@ -537,16 +546,16 @@ export class ObjectPlacer {
             this.placedObjects.push({ type: 'snowman', object: snowman });
         });
 
-        // Add jump ramps for tricks - placed on slopes for natural runs
+        // Add jump ramps along the mountain runs
         const jumpPositions = [
-            { x: -50, z: -40, rot: 0 },
-            { x: -20, z: 30, rot: 0.2 },
-            { x: 40, z: -20, rot: -0.3 },
-            { x: 80, z: 20, rot: 0.1 },
-            { x: -70, z: 60, rot: 0.4 },
-            { x: 10, z: -60, rot: -0.1 },
-            { x: 60, z: 70, rot: 0.2 },
-            { x: -30, z: -100, rot: 0 }
+            { x: -250, z: -200, rot: 0 },
+            { x: -100, z: 150, rot: 0.2 },
+            { x: 200, z: -100, rot: -0.3 },
+            { x: 400, z: 100, rot: 0.1 },
+            { x: -350, z: 300, rot: 0.4 },
+            { x: 50, z: -300, rot: -0.1 },
+            { x: 300, z: 350, rot: 0.2 },
+            { x: -150, z: -500, rot: 0 }
         ];
 
         jumpPositions.forEach(pos => {
@@ -577,37 +586,36 @@ export class ObjectPlacer {
 
         console.log('Generating trick park...');
 
-        // Create a series of jumps going down the mountain
-        // Place jumps on the actual mountain slopes (centered area)
+        // Create jumps going down the mountain - large resort scale
         const mainRunJumps = [];
         for (let i = 0; i < 10; i++) {
-            const z = -150 + i * 35; // Spread from back to front of mountain
-            const x = Math.sin(i * 0.6) * 40; // Slight weave
-            mainRunJumps.push({ x, z, rot: 0, size: 1.2 + Math.random() * 0.5 });
+            const z = -800 + i * 180;
+            const x = Math.sin(i * 0.6) * 200;
+            mainRunJumps.push({ x, z, rot: 0, size: 1.5 + Math.random() * 0.8 });
         }
 
-        // Left run - on left slope
+        // Left run
         const leftRunJumps = [];
         for (let i = 0; i < 6; i++) {
-            const z = -120 + i * 40;
-            const x = -60 - Math.sin(i * 0.5) * 30;
-            leftRunJumps.push({ x, z, rot: 0.4, size: 1.0 + Math.random() * 0.4 });
+            const z = -600 + i * 200;
+            const x = -300 - Math.sin(i * 0.5) * 150;
+            leftRunJumps.push({ x, z, rot: 0.4, size: 1.2 + Math.random() * 0.6 });
         }
 
-        // Right run - on right slope
+        // Right run
         const rightRunJumps = [];
         for (let i = 0; i < 6; i++) {
-            const z = -120 + i * 40;
-            const x = 60 + Math.sin(i * 0.5) * 30;
-            rightRunJumps.push({ x, z, rot: -0.4, size: 1.0 + Math.random() * 0.4 });
+            const z = -600 + i * 200;
+            const x = 300 + Math.sin(i * 0.5) * 150;
+            rightRunJumps.push({ x, z, rot: -0.4, size: 1.2 + Math.random() * 0.6 });
         }
 
         // Big air jumps (larger, on steeper sections)
         const bigAirJumps = [
-            { x: 0, z: -100, rot: 0, size: 1.8 },
-            { x: -40, z: -50, rot: 0.3, size: 1.6 },
-            { x: 40, z: -20, rot: -0.3, size: 1.6 },
-            { x: 0, z: 30, rot: 0, size: 1.8 },
+            { x: 0, z: -500, rot: 0, size: 2.5 },
+            { x: -200, z: -250, rot: 0.3, size: 2.2 },
+            { x: 200, z: -100, rot: -0.3, size: 2.2 },
+            { x: 0, z: 150, rot: 0, size: 2.5 },
         ];
 
         const allJumps = [...mainRunJumps, ...leftRunJumps, ...rightRunJumps, ...bigAirJumps];
@@ -641,10 +649,10 @@ export class ObjectPlacer {
 
         // Add some flags to mark the runs
         const flagPositions = [
-            { x: 0, z: -130 },
-            { x: -80, z: -110 },
-            { x: 80, z: -110 },
-            { x: 0, z: 120 },
+            { x: 0, z: -700 },
+            { x: -400, z: -550 },
+            { x: 400, z: -550 },
+            { x: 0, z: 600 },
         ];
 
         flagPositions.forEach(pos => {
@@ -658,7 +666,7 @@ export class ObjectPlacer {
 
         // Add a lodge at the base
         const lodge = this.lodge.create();
-        lodge.position.set(0, this.mountain.getHeightAt(0, 160), 160);
+        lodge.position.set(0, this.mountain.getHeightAt(0, 800), 800);
         lodge.userData.type = 'lodge';
         lodge.userData.placedObject = true;
         this.scene.add(lodge);

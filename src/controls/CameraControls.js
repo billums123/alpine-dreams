@@ -27,11 +27,11 @@ export class CameraControls {
         this.controls.panSpeed = 0.8;
         this.controls.screenSpacePanning = false; // Pan parallel to ground
 
-        // Zoom settings (scaled for larger terrain)
+        // Zoom settings (scaled for large resort terrain)
         this.controls.enableZoom = true;
         this.controls.zoomSpeed = 1.2;
         this.controls.minDistance = 20;
-        this.controls.maxDistance = 600;
+        this.controls.maxDistance = 5000;
 
         // Rotation settings
         this.controls.enableRotate = true;
@@ -42,7 +42,7 @@ export class CameraControls {
         this.controls.maxPolarAngle = Math.PI / 2 - 0.1; // ~85 degrees
 
         // Set target (look at center of terrain)
-        this.controls.target.set(0, 0, -50);
+        this.controls.target.set(0, 0, -400);
 
         // Smooth key controls
         this.controls.keys = {
@@ -79,18 +79,18 @@ export class CameraControls {
 
     // Reset to default view - shows entire mountain
     reset() {
-        this.camera.position.set(0, 350, 450);
-        this.controls.target.set(0, 0, -50);
+        this.camera.position.set(0, 2000, 3500);
+        this.controls.target.set(0, 0, -400);
         this.controls.update();
     }
 
-    // Set camera to a preset view (scaled for larger terrain)
+    // Set camera to a preset view (scaled for large resort)
     setView(view) {
         const views = {
-            'top': { pos: [0, 500, 0.1], target: [0, 0, 0] },
-            'front': { pos: [0, 100, 400], target: [0, 20, 0] },
-            'side': { pos: [400, 100, 0], target: [0, 20, 0] },
-            'default': { pos: [0, 350, 450], target: [0, 0, -50] }
+            'top': { pos: [0, 4000, 0.1], target: [0, 0, 0] },
+            'front': { pos: [0, 600, 3000], target: [0, 100, 0] },
+            'side': { pos: [3000, 600, 0], target: [0, 100, 0] },
+            'default': { pos: [0, 2000, 3500], target: [0, 0, -400] }
         };
 
         const v = views[view] || views.default;

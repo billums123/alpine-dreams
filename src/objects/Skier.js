@@ -21,14 +21,14 @@ export class Skier {
         this.rotation = 0; // Facing direction (radians)
         this.edgeAngle = 0; // Lean angle for turning
 
-        // Physics constants - tuned for fun skiing
-        this.gravity = 25; // Gravity for slope acceleration (increased for faster skiing)
-        this.airGravity = 28; // Stronger gravity for snappier jumps
-        this.airFriction = 0.005;
+        // Physics constants - realistic ski physics for large resort
+        this.gravity = 45; // Strong gravity for realistic slope acceleration
+        this.airGravity = 50; // Snappy jumps
+        this.airFriction = 0.003;
         this.turnSpeed = 2.5; // How fast you can turn
-        this.maxSpeed = 50; // Top speed (increased)
-        this.brakeForce = 0.92; // Multiplier when braking
-        this.jumpForce = 2.2; // Small realistic hop
+        this.maxSpeed = 120; // High top speed for long runs
+        this.brakeForce = 0.94; // Multiplier when braking
+        this.jumpForce = 3.5; // Jump force scaled for terrain
 
         // Starting position for reset
         this.startPosition = new THREE.Vector3();
@@ -141,10 +141,10 @@ export class Skier {
         this.headSnowball = null; // The controllable head/snowball
         this.headSnowballSize = 1; // Grows as it rolls
 
-        // Camera settings
-        this.cameraOffset = new THREE.Vector3(0, 4, 10);
-        this.cameraLookAhead = 3;
-        this.cameraSmoothness = 0.06; // Smoother camera (lower = smoother)
+        // Camera settings (scaled for large resort)
+        this.cameraOffset = new THREE.Vector3(0, 6, 15);
+        this.cameraLookAhead = 5;
+        this.cameraSmoothness = 0.06;
 
         // Stored camera state for restoration
         this.savedCameraPosition = null;
@@ -154,6 +154,9 @@ export class Skier {
         this.audioContext = null;
         this.skiSound = null;
         this.isAudioInitialized = false;
+
+        // Trees reference for collision detection
+        this.trees = null;
 
         // Bind methods
         this.onKeyDown = this.onKeyDown.bind(this);
@@ -690,10 +693,10 @@ export class Skier {
             case 'KeyW':
             case 'ArrowUp':
                 this.input.forward = true;
-                this.input.tuck = true;
+                this.input.tuck = true; // Tuck for less drag / higher speed
                 // Initiate frontflip if airborne (W = rotate forward, head goes down first)
                 if (!this.isGrounded && !this.isFlipping && this.verticalVelocity > 0) {
-                    this.startFlip(1); // Frontflip - positive rotation = forward tumble
+                    this.startFlip(1);
                 }
                 break;
             case 'KeyS':
@@ -1081,37 +1084,50 @@ export class Skier {
         }
 
         if (this.isGrounded) {
-            // GRAVITY: Accelerate based on slope and facing direction
-            // Dot product: 1 = pointing downhill, 0 = across, -1 = uphill
+            // REALISTIC GRAVITY-DRIVEN PHYSICS
+            // The skier accelerates purely from gravity on slopes - no forward key needed
             const downhillAlignment = forward.dot(slopeDir);
 
-            // Acceleration = gravity * steepness * alignment
-            // Pointing downhill on steep slope = big acceleration
-            // Pointing across slope = small acceleration
-            // Pointing uphill = deceleration
-            const acceleration = this.gravity * slopeSteepness * downhillAlignment;
+            // Gravity acceleration = gravity * steepness * alignment with fall line
+            const gravityAccel = this.gravity * slopeSteepness * downhillAlignment;
 
-            // Always add some base acceleration if on any slope and moving slow
-            // This prevents getting stuck
-            const minAccel = slopeSteepness * 5;
-            const effectiveAccel = this.currentSpeed < 3 ? Math.max(acceleration, minAccel) : acceleration;
+            // Auto-align toward fall line when slow (skier naturally points downhill)
+            if (this.currentSpeed < 5 && slopeSteepness > 0.02 && slopeDir.lengthSq() > 0.0001) {
+                const fallLineAngle = Math.atan2(slopeDir.x, slopeDir.z);
+                const angleDiff = fallLineAngle - this.rotation;
+                // Normalize angle difference
+                const normalizedDiff = Math.atan2(Math.sin(angleDiff), Math.cos(angleDiff));
+                this.rotation += normalizedDiff * 0.5 * delta;
+            }
+
+            // Always add base acceleration on any slope to prevent getting stuck
+            const minAccel = slopeSteepness * 12;
+            const effectiveAccel = this.currentSpeed < 5 ? Math.max(gravityAccel, minAccel) : gravityAccel;
 
             this.currentSpeed += effectiveAccel * delta;
 
-            // TUCKING: Reduces drag for higher speed
+            // Uphill deceleration - naturally slow down going uphill
+            if (downhillAlignment < -0.1) {
+                this.currentSpeed += this.gravity * slopeSteepness * downhillAlignment * delta * 0.5;
+            }
+
+            // TUCKING: W/Up key reduces drag significantly for higher terminal speed
             this.isTucking = this.input.tuck && Math.abs(this.edgeAngle) < 0.3;
 
-            // FRICTION: Very low base friction, more when turning hard
-            const baseFriction = this.isTucking ? 0.001 : 0.003; // Much less friction when tucking
-            const turnFriction = Math.abs(this.edgeAngle) * 0.025; // Carving scrubs speed
-            this.currentSpeed *= (1 - baseFriction - turnFriction);
+            // FRICTION: Realistic snow friction + edge friction when carving
+            const baseFriction = this.isTucking ? 0.0005 : 0.002;
+            const turnFriction = Math.abs(this.edgeAngle) * 0.02;
+            // Speed-dependent air drag (increases with speed squared, approximated)
+            const airDrag = this.isTucking ? 0.00001 : 0.00003;
+            const speedDrag = this.currentSpeed * airDrag;
+            this.currentSpeed *= (1 - baseFriction - turnFriction - speedDrag);
 
-            // BRAKING
+            // BRAKING (S/Down key - snowplow)
             if (this.input.backward && !this.isTucking) {
                 this.currentSpeed *= this.brakeForce;
             }
 
-            // Speed limits - higher max when tucking
+            // Speed limits - tucking allows higher terminal velocity
             const effectiveMaxSpeed = this.isTucking ? this.maxSpeed * 1.3 : this.maxSpeed;
             this.currentSpeed = Math.max(0, Math.min(this.currentSpeed, effectiveMaxSpeed));
 
@@ -1152,6 +1168,7 @@ export class Skier {
             this.currentSpeed = Math.sqrt(this.velocity.x * this.velocity.x + this.velocity.z * this.velocity.z);
 
             // SPIN TRICKS - A/D to spin while airborne
+            const HORIZONTAL_SPIN_MULTIPLIER = 2.0;
             if (Math.abs(this.edgeAngle) > 0.3) {
                 // Start or continue spinning
                 if (!this.isSpinning) {
@@ -1159,10 +1176,10 @@ export class Skier {
                     this.spinRotation = 0;
                     this.totalSpinDegrees = 0;
                 }
-                // Add spin velocity based on input
-                this.spinVelocity += this.edgeAngle * 15 * delta;
-                // Cap spin speed
-                this.spinVelocity = THREE.MathUtils.clamp(this.spinVelocity, -12, 12);
+                // Add spin velocity based on input (scaled for faster response)
+                this.spinVelocity += this.edgeAngle * 15 * HORIZONTAL_SPIN_MULTIPLIER * delta;
+                // Cap spin speed (higher cap for snappier spins)
+                this.spinVelocity = THREE.MathUtils.clamp(this.spinVelocity, -20, 20);
             }
 
             // Apply spin rotation
@@ -1191,7 +1208,7 @@ export class Skier {
         if (this.isGrounded && !this.isJumping) {
             // Calculate current slope in direction of travel
             // Positive = going uphill, Negative = going downhill
-            const lookAheadDist = 1.5;
+            const lookAheadDist = 3.0;
             const aheadX = this.position.x + forward.x * lookAheadDist;
             const aheadZ = this.position.z + forward.z * lookAheadDist;
             const aheadHeight = this.mountain.getHeightAt(aheadX, aheadZ);
@@ -1847,8 +1864,7 @@ export class Skier {
                 trickStatus.classList.remove('hidden');
             } else if (this.isSpinning) {
                 const spinDegrees = Math.round(this.totalSpinDegrees / 180) * 180;
-                const spinName = spinDegrees >= 180 ? `${spinDegrees}°` : 'SPINNING...';
-                trickStatus.textContent = spinName;
+                trickStatus.textContent = spinDegrees >= 180 ? `${spinDegrees}°` : '\u21BB';
                 trickStatus.classList.remove('hidden');
             } else if (!this.isGrounded && this.airHintCount < this.maxAirHints) {
                 trickStatus.textContent = 'AIR! (A/D=spin, W/S=flip)';
@@ -2431,7 +2447,29 @@ export class Skier {
         const snowballRadius = head.size * 0.5;
         const snowballPos = head.mesh.position;
 
-        // Find trees in scene
+        // Check instanced trees via Trees.treeData
+        if (this.trees && this.trees.treeData) {
+            for (const entry of this.trees.treeData) {
+                if (entry.knockedDown) continue;
+
+                const dx = snowballPos.x - entry.position.x;
+                const dz = snowballPos.z - entry.position.z;
+                const distance = Math.sqrt(dx * dx + dz * dz);
+
+                const treeRadius = 0.5 * entry.scale;
+                if (distance < snowballRadius + treeRadius) {
+                    // Mark instanced tree as knocked down and hide it
+                    entry.knockedDown = true;
+                    this.trees.hideInstance(entry);
+
+                    // Spawn a standalone mesh for fall animation
+                    const fallTree = this.trees.createFallbackTree(entry);
+                    this.knockDownTree(fallTree, head);
+                }
+            }
+        }
+
+        // Also check any standalone trees (manually placed)
         this.scene.traverse(obj => {
             if (obj.userData && obj.userData.isTree && !obj.userData.knockedDown) {
                 const treePos = obj.position;
@@ -2439,10 +2477,8 @@ export class Skier {
                 const dz = snowballPos.z - treePos.z;
                 const distance = Math.sqrt(dx * dx + dz * dz);
 
-                // Collision check
                 const treeRadius = 0.5;
                 if (distance < snowballRadius + treeRadius) {
-                    // KNOCK DOWN THE TREE!
                     this.knockDownTree(obj, head);
                 }
             }

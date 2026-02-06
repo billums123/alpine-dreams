@@ -17,18 +17,18 @@ export class SceneManager {
     async init() {
         // Create scene
         this.scene = new THREE.Scene();
-        this.scene.fog = new THREE.FogExp2(0x9bb5ce, 0.0015); // Light fog for atmosphere
+        this.scene.fog = new THREE.FogExp2(0x9bb5ce, 0.00035); // Denser fog to soften world boundary
 
         // Create camera - positioned to see entire mountain
         this.camera = new THREE.PerspectiveCamera(
             60,
             window.innerWidth / window.innerHeight,
-            0.1,
-            3000
+            0.5,
+            20000
         );
-        // Position camera high and back to see the whole terrain
-        this.camera.position.set(0, 350, 450);
-        this.camera.lookAt(0, 0, -50);
+        // Position camera high and back to see the whole resort
+        this.camera.position.set(0, 2000, 3500);
+        this.camera.lookAt(0, 0, -400);
 
         // Create renderer
         const canvas = document.getElementById(this.canvasId);
@@ -40,7 +40,7 @@ export class SceneManager {
         this.renderer.setSize(window.innerWidth, window.innerHeight);
         this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
         this.renderer.shadowMap.enabled = true;
-        this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+        this.renderer.shadowMap.type = THREE.PCFShadowMap;
         this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
         this.renderer.toneMappingExposure = 0.8;
         this.renderer.outputColorSpace = THREE.SRGBColorSpace;

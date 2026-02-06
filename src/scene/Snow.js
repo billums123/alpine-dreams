@@ -1,5 +1,5 @@
 /**
- * Snow - Gentle falling snow particle system
+ * Snow - Gentle falling snow particle system (optimized with flat arrays)
  */
 
 import * as THREE from 'three';
@@ -10,25 +10,36 @@ export class Snow {
         this.particles = null;
         this.particleCount = 3000;
         this.positions = null;
-        this.velocities = [];
         this.enabled = true;
 
-        // Snow bounds
+        // Velocity data as flat Float32Arrays (cache-friendly, no GC pressure)
+        this.fallSpeeds = null;   // per-particle fall speed
+        this.driftX = null;       // per-particle X drift
+        this.driftZ = null;       // per-particle Z drift
+        this.wobblePhase = null;  // per-particle wobble phase offset
+        this.wobbleSpeed = null;  // per-particle wobble speed
+
+        // Snow bounds (large resort scale)
         this.bounds = {
-            x: 150,
-            y: 80,
-            z: 150
+            x: 1500,
+            y: 500,
+            z: 1500
         };
     }
 
     create() {
-        // Create particle geometry
         const geometry = new THREE.BufferGeometry();
 
         this.positions = new Float32Array(this.particleCount * 3);
         const sizes = new Float32Array(this.particleCount);
 
-        // Initialize particle positions
+        // Initialize flat velocity arrays
+        this.fallSpeeds = new Float32Array(this.particleCount);
+        this.driftX = new Float32Array(this.particleCount);
+        this.driftZ = new Float32Array(this.particleCount);
+        this.wobblePhase = new Float32Array(this.particleCount);
+        this.wobbleSpeed = new Float32Array(this.particleCount);
+
         for (let i = 0; i < this.particleCount; i++) {
             const i3 = i * 3;
 
@@ -38,16 +49,14 @@ export class Snow {
             this.positions[i3 + 2] = (Math.random() - 0.5) * this.bounds.z * 2;
 
             // Random size variation
-            sizes[i] = Math.random() * 0.5 + 0.3;
+            sizes[i] = Math.random() * 1.5 + 0.8;
 
-            // Store velocity for each particle
-            this.velocities.push({
-                y: Math.random() * 0.3 + 0.2, // Fall speed
-                x: (Math.random() - 0.5) * 0.1, // Drift
-                z: (Math.random() - 0.5) * 0.1,
-                wobble: Math.random() * Math.PI * 2, // Phase for wobble
-                wobbleSpeed: Math.random() * 2 + 1
-            });
+            // Velocity data (flat arrays)
+            this.fallSpeeds[i] = Math.random() * 0.3 + 0.2;
+            this.driftX[i] = (Math.random() - 0.5) * 0.1;
+            this.driftZ[i] = (Math.random() - 0.5) * 0.1;
+            this.wobblePhase[i] = Math.random() * Math.PI * 2;
+            this.wobbleSpeed[i] = Math.random() * 2 + 1;
         }
 
         geometry.setAttribute('position', new THREE.BufferAttribute(this.positions, 3));
@@ -59,7 +68,6 @@ export class Snow {
         canvas.height = 32;
         const ctx = canvas.getContext('2d');
 
-        // Draw soft circular snowflake
         const gradient = ctx.createRadialGradient(16, 16, 0, 16, 16, 16);
         gradient.addColorStop(0, 'rgba(255, 255, 255, 1)');
         gradient.addColorStop(0.3, 'rgba(255, 255, 255, 0.8)');
@@ -71,12 +79,12 @@ export class Snow {
 
         const texture = new THREE.CanvasTexture(canvas);
 
-        // Custom shader material for snow
         const material = new THREE.ShaderMaterial({
             uniforms: {
                 pointTexture: { value: texture },
                 fogColor: { value: this.scene.fog ? this.scene.fog.color : new THREE.Color(0x9bb5ce) },
-                fogDensity: { value: this.scene.fog ? this.scene.fog.density : 0.008 }
+                fogDensity: { value: this.scene.fog ? this.scene.fog.density : 0.008 },
+                nightMode: { value: 0.0 }
             },
             vertexShader: `
                 attribute float size;
@@ -97,11 +105,17 @@ export class Snow {
             `,
             fragmentShader: `
                 uniform sampler2D pointTexture;
+                uniform float nightMode;
                 varying float vAlpha;
 
                 void main() {
                     vec4 texColor = texture2D(pointTexture, gl_PointCoord);
-                    gl_FragColor = vec4(1.0, 1.0, 1.0, texColor.a * vAlpha * 0.8);
+                    // Moonlit blue tint at night, brighter specks for shimmer
+                    vec3 dayColor = vec3(1.0, 1.0, 1.0);
+                    vec3 nightColor = vec3(0.7, 0.82, 1.0);
+                    vec3 color = mix(dayColor, nightColor, nightMode);
+                    float alpha = texColor.a * vAlpha * mix(0.8, 1.0, nightMode);
+                    gl_FragColor = vec4(color, alpha);
                 }
             `,
             transparent: true,
@@ -118,37 +132,41 @@ export class Snow {
         if (!this.enabled || !this.particles) return;
 
         const time = performance.now() * 0.001;
+        const dt10 = delta * 10;
+        const boundsX = this.bounds.x;
+        const boundsY = this.bounds.y;
+        const boundsZ = this.bounds.z;
+        const pos = this.positions;
 
         for (let i = 0; i < this.particleCount; i++) {
             const i3 = i * 3;
-            const vel = this.velocities[i];
 
             // Apply gravity and drift
-            this.positions[i3 + 1] -= vel.y * delta * 10;
+            pos[i3 + 1] -= this.fallSpeeds[i] * dt10;
 
             // Gentle wobble
-            const wobble = Math.sin(time * vel.wobbleSpeed + vel.wobble) * 0.05;
-            this.positions[i3] += (vel.x + wobble) * delta * 10;
-            this.positions[i3 + 2] += vel.z * delta * 10;
+            const wobble = Math.sin(time * this.wobbleSpeed[i] + this.wobblePhase[i]) * 0.05;
+            pos[i3] += (this.driftX[i] + wobble) * dt10;
+            pos[i3 + 2] += this.driftZ[i] * dt10;
 
             // Reset particle when it falls below ground
-            if (this.positions[i3 + 1] < -2) {
-                this.positions[i3 + 1] = this.bounds.y;
-                this.positions[i3] = (Math.random() - 0.5) * this.bounds.x * 2;
-                this.positions[i3 + 2] = (Math.random() - 0.5) * this.bounds.z * 2;
+            if (pos[i3 + 1] < -2) {
+                pos[i3 + 1] = boundsY;
+                pos[i3] = (Math.random() - 0.5) * boundsX * 2;
+                pos[i3 + 2] = (Math.random() - 0.5) * boundsZ * 2;
             }
 
             // Wrap around horizontally
-            if (this.positions[i3] > this.bounds.x) {
-                this.positions[i3] = -this.bounds.x;
-            } else if (this.positions[i3] < -this.bounds.x) {
-                this.positions[i3] = this.bounds.x;
+            if (pos[i3] > boundsX) {
+                pos[i3] = -boundsX;
+            } else if (pos[i3] < -boundsX) {
+                pos[i3] = boundsX;
             }
 
-            if (this.positions[i3 + 2] > this.bounds.z) {
-                this.positions[i3 + 2] = -this.bounds.z;
-            } else if (this.positions[i3 + 2] < -this.bounds.z) {
-                this.positions[i3 + 2] = this.bounds.z;
+            if (pos[i3 + 2] > boundsZ) {
+                pos[i3 + 2] = -boundsZ;
+            } else if (pos[i3 + 2] < -boundsZ) {
+                pos[i3 + 2] = boundsZ;
             }
         }
 
@@ -161,9 +179,14 @@ export class Snow {
         return this.enabled;
     }
 
+    setNightMode(enabled) {
+        if (this.particles && this.particles.material.uniforms) {
+            this.particles.material.uniforms.nightMode.value = enabled ? 1.0 : 0.0;
+        }
+    }
+
     setIntensity(intensity) {
         // Adjust particle visibility based on intensity (0-1)
         const visibleCount = Math.floor(this.particleCount * intensity);
-        // This would require more complex handling; for now just toggle
     }
 }
