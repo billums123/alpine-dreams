@@ -215,6 +215,23 @@ const NIGHT_TRAIL = { color: [0.62, 0.68, 0.86], rim: [0.85, 0.88, 0.97], opacit
 // ---------- trick naming (points table unchanged) ----------
 const SPIN_POINTS = { 180: 100, 360: 250, 540: 500, 720: 800, 900: 1200, 1080: 1800 };
 const FLIP_POINTS = [0, 300, 700, 1200, 2000];
+
+// ---------- air tuning ----------
+// Kickers and manual jumps fly on floaty "trick" gravity so a medium kicker gives
+// ~1.3s of air (room for a 360 or a flip) and a big hit ~2s (720 / double).
+const TRICK_AIR_GRAVITY = 26;
+const ROLLER_AIR_GRAVITY = 46;  // natural pops off rollers stay snappy (unplanned air)
+const HANG_VY = 3.5;            // |vy| below this = near apex ...
+const HANG_GRAVITY_MUL = 0.7;   // ... where gravity eases off for a touch of hang time
+const KICKER_LIFT = 0.3;        // vy = speed * lift * scale^0.544  (~12 at 30 u/s on a 1.6 kicker)
+const KICKER_VY_MIN = 7, KICKER_VY_MAX = 17;
+const KICKER_VY_TERRAIN_MAX = 21; // extra pop allowed when the ground rises after the lip
+const SPIN_RATE = 7.8;          // rad/s at full spin (360 in ~0.8s)
+const SPIN_ACCEL = 45;
+const FLIP_RATE = 7.2;          // rad/s (one flip in ~0.9s) ...
+const FLIP_RATE_MAX = 11;       // ... sped up on short air so a tapped flip can still come round
+const SPIN_LAND_TOL = 50;       // degrees off a 180 multiple still counted clean (auto-corrected)
+const FLIP_LAND_TOL = 1.2;      // radians off a whole flip still counted clean (auto-corrected)
 function nameTrick(spinDeg, flips, flipDir) {
     const spin = spinDeg >= 180 ? spinDeg : 0;
     if (flips > 0) {
@@ -248,11 +265,12 @@ export class Skier {
         // Physics constants (tuned at 60fps; applied dt-correctly)
         this.gravity = 45;
         this.airGravity = 50;
-        this.airFriction = 0.003;
+        this._airG = this.airGravity; // gravity for the current flight (set at takeoff)
+        this.airFriction = 0.0012; // low: long kicker flights shouldn't bleed much speed
         this.turnSpeed = 1.6;
         this.maxSpeed = 120;
         this.brakeForce = 0.94;
-        this.jumpForce = 3.5;
+        this.jumpForce = 4.6;
 
         this.startPosition = new THREE.Vector3();
         this.startRotation = 0;
@@ -271,6 +289,7 @@ export class Skier {
         // Flip / spin
         this.flipRotation = 0;
         this.flipVelocity = 0;
+        this._flipRate = FLIP_RATE;
         this.isFlipping = false;
         this.flipDirection = 0;
         this.trickLanded = false;
@@ -348,6 +367,7 @@ export class Skier {
         this._camRoll = 0;
         this._camFov = 60;
         this._trauma = 0;
+        this._camAir = 0;
         this._shakeT = 0;
         this._reducedMotion = prefersReducedMotion();
         this.savedCameraPosition = null;
@@ -965,6 +985,7 @@ export class Skier {
         this._camAnchorY = this.position.y;
         this._camRoll = 0;
         this._trauma = 0;
+        this._camAir = 0;
         this.cameraControls.setEnabled(false);
 
         window.addEventListener('keydown', this.onKeyDown);
@@ -986,12 +1007,16 @@ export class Skier {
         this.cameraYaw = this.rotation;
         this.flipRotation = 0;
         this.flipVelocity = 0;
+        this._flipRate = FLIP_RATE;
         this.isFlipping = false;
         this.spinRotation = 0;
         this.spinVelocity = 0;
         this.isSpinning = false;
         this.totalSpinDegrees = 0;
         this.lastTerrainSlope = 0;
+        this._airG = this.airGravity;
+        this._spinArmed = true;
+        this._noSteerTime = 0;
         this.isTucking = false;
         this.isBraking = false;
         this.currentTrick = { spinDegrees: 0, hasFlip: false, flipDirection: 0, numFlips: 0, startTime: 0 };
@@ -1093,7 +1118,7 @@ export class Skier {
                 const fresh = !e.repeat && !this.input.forward;
                 this.input.forward = true;
                 this.input.tuck = true;
-                if (fresh && !this.isGrounded && !this.isFlipping && this.verticalVelocity > 0) this.startFlip(1);
+                if (fresh && this._canStartFlip()) this.startFlip(1);
                 break;
             }
             case 'KeyS':
@@ -1102,7 +1127,7 @@ export class Skier {
                 const fresh = !e.repeat && !this.input.backward;
                 if (fresh && this.isGrounded && Math.abs(this.currentSpeed) > 12) this._brakeBurst = true;
                 this.input.backward = true;
-                if (fresh && !this.isGrounded && !this.isFlipping && this.verticalVelocity > 0) this.startFlip(-1);
+                if (fresh && this._canStartFlip()) this.startFlip(-1);
                 break;
             }
             case 'KeyA':
@@ -1161,45 +1186,97 @@ export class Skier {
     // =====================================================================
     // TRICKS
     // =====================================================================
+    /** Flips start on a fresh press while rising or just past the apex. */
+    _canStartFlip() {
+        return !this.isGrounded && !this.isFlipping && !this.isRagdolling && this.verticalVelocity > -2;
+    }
+
     startFlip(direction) {
         this.isFlipping = true;
         this.flipDirection = direction;
         this.flipRotation = 0;
-        this.flipVelocity = direction * (8 + Math.min(this.currentSpeed * 0.3, 4));
+        // Arcade assist: time the flip to the (flat-ground) estimate of the air left.
+        const g = this._airG, vy = this.verticalVelocity;
+        const h = Math.max(0, this.position.y - this.mountain.getHeightAt(this.position.x, this.position.z));
+        const tLeft = (vy + Math.sqrt(vy * vy + 2 * g * h)) / g;
+        this._flipRate = THREE.MathUtils.clamp(TAU / Math.max(tLeft * 0.85, 0.01), FLIP_RATE, FLIP_RATE_MAX);
+        this.flipVelocity = direction * this._flipRate;
         this.trickLanded = false;
     }
 
+    /**
+     * Tap W/S = one flip that completes itself; hold to keep rotating. On release the
+     * flip settles onto the next whole rotation (backing up at most ~45 degrees).
+     */
     updateFlip(delta) {
         if (!this.isFlipping) return;
-        this.flipRotation += this.flipVelocity * delta;
 
-        if (Math.abs(this.flipRotation) >= TAU && !this.trickLanded) this.trickLanded = true;
-
-        if (this.isGrounded) {
-            const normalizedRotation = this.flipRotation % TAU;
-            const landingAngle = Math.abs(normalizedRotation);
-            const tolerance = 0.9;
-            const cleanLanding = landingAngle < tolerance || landingAngle > TAU - tolerance ||
-                (landingAngle > Math.PI - tolerance && landingAngle < Math.PI + tolerance);
-
-            const numFlips = Math.floor(Math.abs(this.flipRotation) / TAU);
-            if (numFlips > 0) {
-                this.currentTrick.hasFlip = true;
-                this.currentTrick.flipDirection = this.flipDirection;
-                this.currentTrick.numFlips = numFlips;
+        if (!this.isGrounded) {
+            const held = this.flipDirection > 0 ? this.input.forward : this.input.backward;
+            if (held) {
+                this.flipVelocity = this.flipDirection * this._flipRate;
+            } else {
+                const turns = Math.max(1, Math.ceil(Math.abs(this.flipRotation) / TAU - 0.12));
+                const dist = this.flipDirection * turns * TAU - this.flipRotation;
+                this.flipVelocity = Math.abs(dist) < 0.004 ? 0 : Math.sign(dist) * Math.min(this._flipRate, Math.abs(dist) * 10 + 1);
+                if (this.flipVelocity === 0) this.flipRotation = this.flipDirection * turns * TAU;
             }
+            this.flipRotation += this.flipVelocity * delta;
+            if (Math.abs(this.flipRotation) >= TAU && !this.trickLanded) this.trickLanded = true;
+            return;
+        }
 
-            if (!cleanLanding && Math.abs(this.flipRotation) > Math.PI * 0.5) {
-                this.awardTrickPoints(false);
-                this.startRagdoll();
-                return;
-            } else if (cleanLanding && numFlips > 0 && !this.isSpinning) {
-                this.awardTrickPoints(true);
+        // Landed: forgive a residual of up to FLIP_LAND_TOL off a whole rotation.
+        const turnsF = Math.abs(this.flipRotation) / TAU;
+        const numFlips = Math.round(turnsF);
+        const residual = Math.abs(turnsF - numFlips) * TAU;
+        const cleanLanding = residual < FLIP_LAND_TOL;
+
+        if (numFlips > 0) {
+            this.currentTrick.hasFlip = true;
+            this.currentTrick.flipDirection = this.flipDirection;
+            this.currentTrick.numFlips = numFlips;
+        }
+
+        if (!cleanLanding) {
+            this.awardTrickPoints(false);
+            this.startRagdoll();
+            return;
+        } else if (numFlips > 0 && !this.isSpinning) {
+            this.awardTrickPoints(true);
+        }
+
+        // Keep the airborne pose so the residual eases out instead of snapping.
+        if (residual > 0.01 && this._baseQuat && !this.isSpinning) this._baseQuat.copy(this.mesh.quaternion);
+        this.isFlipping = false;
+        this.flipRotation = 0;
+        this.flipVelocity = 0;
+    }
+
+    /**
+     * A/D in the air spins at SPIN_RATE; on release the spin settles onto the
+     * nearest 180 ahead (backing up at most ~36 degrees).
+     */
+    _updateAirSpin(steer, delta) {
+        if (steer !== 0) {
+            if (!this.isSpinning) {
+                this.isSpinning = true;
+                this.spinRotation = 0;
+                this.totalSpinDegrees = 0;
             }
-
-            this.isFlipping = false;
-            this.flipRotation = 0;
-            this.flipVelocity = 0;
+            const target = steer * SPIN_RATE;
+            const dv = target - this.spinVelocity;
+            this.spinVelocity += Math.sign(dv) * Math.min(Math.abs(dv), SPIN_ACCEL * delta);
+        } else if (this.isSpinning) {
+            const dir = Math.sign(this.spinRotation) || Math.sign(this.spinVelocity) || 1;
+            const halves = Math.max(0, Math.ceil(Math.abs(this.spinRotation) / Math.PI - 0.2));
+            const dist = dir * halves * Math.PI - this.spinRotation;
+            this.spinVelocity = Math.abs(dist) < 0.004 ? 0 : Math.sign(dist) * Math.min(SPIN_RATE, Math.abs(dist) * 9 + 0.8);
+            if (this.spinVelocity === 0) this.spinRotation = dir * halves * Math.PI;
+        }
+        if (this.isSpinning) {
+            this.spinRotation += this.spinVelocity * delta;
+            this.totalSpinDegrees = Math.abs(this.spinRotation) / DEG;
         }
     }
 
@@ -1208,7 +1285,7 @@ export class Skier {
             const spinDegrees = Math.abs(this.spinRotation) / DEG;
             const nearestHalf = Math.round(spinDegrees / 180) * 180;
             const landingError = Math.abs(spinDegrees - nearestHalf);
-            const cleanLanding = landingError < 50;
+            const cleanLanding = landingError < SPIN_LAND_TOL;
 
             if (spinDegrees >= 180) this.currentTrick.spinDegrees = nearestHalf;
 
@@ -1216,13 +1293,14 @@ export class Skier {
                 this.awardTrickPoints(false);
                 this.startRagdoll();
                 return;
-            } else if (spinDegrees >= 180) {
+            } else if (nearestHalf >= 180 || this.currentTrick.hasFlip) {
                 this.awardTrickPoints(true);
             }
 
+            // Auto-correct: land square to the travel line (forwards or switch).
             const preSpinVelX = this.velocity.x;
             const preSpinVelZ = this.velocity.z;
-            this.rotation += this.spinRotation;
+            this.rotation += Math.sign(this.spinRotation) * nearestHalf * DEG;
             this.currentSpeed = preSpinVelX * Math.sin(this.rotation) + preSpinVelZ * Math.cos(this.rotation);
             this.velocity.x = preSpinVelX;
             this.velocity.z = preSpinVelZ;
@@ -1231,7 +1309,9 @@ export class Skier {
             this.spinRotation = 0;
             this.spinVelocity = 0;
             this.totalSpinDegrees = 0;
-            this._baseQuatValid = false;
+            // Ease from the airborne pose to the new heading rather than snapping.
+            if (this._baseQuat && this._baseQuatValid) this._baseQuat.copy(this.mesh.quaternion);
+            else this._baseQuatValid = false;
         }
     }
 
@@ -1373,6 +1453,20 @@ export class Skier {
                 this.rotation += diff * 0.5 * delta;
             }
 
+            // Hands-off fall-line assist: after ~0.6s without steering, ease the heading
+            // toward the broad downhill direction so a passive rider never stalls on a
+            // traverse or flat. Sampled wide (+/-12) so bumps don't steer it.
+            this._noSteerTime = rawEdge === 0 ? this._noSteerTime + delta : 0;
+            if (this._noSteerTime > 0.6 && this.currentSpeed > 0.5) {
+                const r = 12, px = this.position.x, pz = this.position.z, m = this.mountain;
+                const gx = m.getHeightAt(px - r, pz) - m.getHeightAt(px + r, pz);
+                const gz = m.getHeightAt(px, pz - r) - m.getHeightAt(px, pz + r);
+                if (gx * gx + gz * gz > 0.04) {
+                    const diff = Math.atan2(Math.sin(Math.atan2(gx, gz) - this.rotation), Math.cos(Math.atan2(gx, gz) - this.rotation));
+                    if (Math.abs(diff) < 1.9) this.rotation += diff * Math.min(1, (this._noSteerTime - 0.6) * 2) * 0.3 * delta;
+                }
+            }
+
             const minAccel = slopeSteepness * 12;
             const effectiveAccel = Math.abs(this.currentSpeed) < 5 ? Math.max(gravityAccel, minAccel) : gravityAccel;
             this.currentSpeed += effectiveAccel * delta;
@@ -1403,9 +1497,12 @@ export class Skier {
             if (this.input.jump) {
                 const nextH = this.mountain.getHeightAt(this.position.x + this.velocity.x * delta, this.position.z + this.velocity.z * delta);
                 const upcomingDrop = terrainHeight - nextH;
+                // ~0.5s of air on the flat; a little extra popping off a lip at speed.
                 let jumpBoost = this.jumpForce;
-                if (upcomingDrop > 0.2 && this.currentSpeed > 10) jumpBoost += this.currentSpeed * 0.02;
-                this.verticalVelocity = Math.min(jumpBoost, 3.5);
+                if (upcomingDrop > 0.2 && this.currentSpeed > 10) jumpBoost += this.currentSpeed * 0.04;
+                this.verticalVelocity = Math.min(jumpBoost, 7.5);
+                this._airG = TRICK_AIR_GRAVITY;
+                this._spinArmed = true;
                 this.isGrounded = false;
                 this.isJumping = true;
                 this.input.jump = false;
@@ -1413,30 +1510,18 @@ export class Skier {
             }
         } else {
             this.isBraking = false;
-            this.verticalVelocity -= this.airGravity * delta;
+            const hang = Math.abs(this.verticalVelocity) < HANG_VY && this._airG === TRICK_AIR_GRAVITY ? HANG_GRAVITY_MUL : 1;
+            this.verticalVelocity -= this._airG * hang * delta;
             const af = frameMul(1 - this.airFriction, delta);
             this.velocity.x *= af;
             this.velocity.z *= af;
             this.currentSpeed = Math.sqrt(this.velocity.x * this.velocity.x + this.velocity.z * this.velocity.z);
 
-            const HORIZONTAL_SPIN_MULTIPLIER = 2.0;
-            if (Math.abs(this.edgeAngle) > 0.3) {
-                if (!this.isSpinning) {
-                    this.isSpinning = true;
-                    this.spinRotation = 0;
-                    this.totalSpinDegrees = 0;
-                }
-                this.spinVelocity += this.edgeAngle * 15 * HORIZONTAL_SPIN_MULTIPLIER * delta;
-                this.spinVelocity = THREE.MathUtils.clamp(this.spinVelocity, -20, 20);
-            }
-            if (this.isSpinning) {
-                this.spinRotation += this.spinVelocity * delta;
-                this.totalSpinDegrees = Math.abs(this.spinRotation) / DEG;
-                this.spinVelocity *= frameMul(0.98, delta);
-            }
-            if (Math.abs(this.edgeAngle) > 0.1 && !this.isSpinning) {
-                this.rotation += this.edgeAngle * 0.5 * delta;
-            }
+            // Spins read the keys directly (no edge smoothing) so they respond instantly.
+            // A carve held over a roller pop doesn't spin until re-pressed; it just steers.
+            if (rawEdge === 0) this._spinArmed = true;
+            if (this._spinArmed || this.isSpinning) this._updateAirSpin(rawEdge, delta);
+            else this.rotation += this.edgeAngle * 0.5 * delta;
         }
 
         this.position.x += this.velocity.x * delta;
@@ -1454,6 +1539,8 @@ export class Skier {
             if (slopeChange < -0.15 && this.currentSpeed > 12 && now - this.lastSlopeChangeTime > 500) {
                 const inflectionStrength = Math.min(Math.abs(slopeChange) * 3, 1.5);
                 this.verticalVelocity = Math.min(this.currentSpeed * 0.08 * inflectionStrength + 1, 5);
+                this._airG = ROLLER_AIR_GRAVITY;
+                this._spinArmed = rawEdge === 0;
                 this.isGrounded = false;
                 this.isJumping = true;
                 this.lastSlopeChangeTime = now;
@@ -1467,14 +1554,23 @@ export class Skier {
         } else {
             this.position.y += this.verticalVelocity * delta;
             if (this.position.y <= newTerrainHeight) {
-                const impactVel = -this.verticalVelocity;
+                // Impact relative to the slope: landing on a downslope is soft.
+                const descent = delta > 0 ? Math.max(0, (terrainHeight - newTerrainHeight) / delta) : 0;
+                const impactVel = -this.verticalVelocity - descent * 0.85;
                 this.position.y = newTerrainHeight;
                 this.verticalVelocity = 0;
                 this.isGrounded = true;
                 this.isJumping = false;
+                // Re-baseline the roller detector on the landing slope; the pre-takeoff
+                // slope would read as a fresh lip and chain-pop the rider straight back up.
+                {
+                    const lfx = Math.sin(this.rotation), lfz = Math.cos(this.rotation);
+                    this.lastTerrainSlope = (this.mountain.getHeightAt(this.position.x + lfx * 3, this.position.z + lfz * 3) - newTerrainHeight) / 3;
+                    this.lastSlopeChangeTime = performance.now();
+                }
                 this._pendingLand = {
                     airTime: this.stats.currentAirTime,
-                    impact: clamp01((impactVel - 3) / 30),
+                    impact: clamp01((impactVel - 5) / 42), // big kicker landings ~0.4-0.6
                 };
             }
         }
@@ -1692,8 +1788,22 @@ export class Skier {
                     const now = performance.now();
                     if (d2 < jumpRadius * 0.7 && approachAngle < 0.5 && movementAlignment > -0.3 &&
                         this.isGrounded && skierSpeed > 5 && now - this.lastJumpRampTime > 800) {
-                        const launchPower = Math.min(skierSpeed * 0.1 * jumpScale, 4);
-                        this.verticalVelocity = launchPower + 1;
+                        // Pop scales with speed and kicker size: ~1.3s air on a medium
+                        // kicker at cruising speed, ~2s on the big ones (capped).
+                        let vy = THREE.MathUtils.clamp(
+                            skierSpeed * KICKER_LIFT * Math.pow(jumpScale, 0.544), KICKER_VY_MIN, KICKER_VY_MAX);
+                        // Fit the flight to the terrain ahead: pop harder if the ground rises and
+                        // would cut it short, softer if it falls away into a huge (>2.1s) drop.
+                        const tWant = THREE.MathUtils.clamp(skierSpeed * 0.035 * Math.sqrt(jumpScale), 1.0, 1.9);
+                        for (let k = 0; k < 6; k++) {
+                            const t = this._predictAirTime(vy, TRICK_AIR_GRAVITY);
+                            if (t < tWant && vy < KICKER_VY_TERRAIN_MAX) vy = Math.min(vy + 1.5, KICKER_VY_TERRAIN_MAX);
+                            else if (t > 2.1 && vy > 4) vy = Math.max(vy - 2, 4);
+                            else break;
+                        }
+                        this.verticalVelocity = vy;
+                        this._airG = TRICK_AIR_GRAVITY;
+                        this._spinArmed = true;
                         this.isGrounded = false;
                         this.isJumping = true;
                         this.lastJumpRampTime = now;
@@ -1715,6 +1825,19 @@ export class Skier {
                 this._collideWith(obj.position.x, obj.position.y, obj.position.z, r, sx, sy, sz, obj, list[i].type);
             }
         }
+    }
+
+    /** Coarse flight sim from the current state against the terrain (launch-time only). */
+    _predictAirTime(vy, g) {
+        const dt = 1 / 30;
+        let x = this.position.x, z = this.position.z, y = this.position.y;
+        const vx = this.velocity.x, vz = this.velocity.z;
+        for (let t = dt; t < 3; t += dt) {
+            x += vx * dt; z += vz * dt; y += vy * dt;
+            vy -= g * (Math.abs(vy) < HANG_VY ? HANG_GRAVITY_MUL : 1) * dt;
+            if (y <= this.mountain.getHeightAt(x, z)) return t;
+        }
+        return 3;
     }
 
     _collideWith(ox, oy, oz, radius, sx, sy, sz, obj, type) {
@@ -1986,11 +2109,16 @@ export class Skier {
             fx = this.position.x; fz = this.position.z;
             // In the air, the anchor rides only partway up so big air reads as height.
             fy = this.isGrounded ? this.position.y : ground + hAir * 0.55;
-            dist = this.cameraOffset.z + speed01 * 1.8 - tuck * 1.3 + Math.min(hAir * 0.3, 6);
-            height = this.cameraOffset.y + speed01 * 0.5 - tuck * 0.75 + Math.min(hAir * 0.3, 6);
-            lookAhead = this.cameraLookAhead + speed01 * 7;
+            // Real air (not roller chatter) eases the camera back and up so the
+            // whole rotation stays in frame; it settles back after landing.
+            const bigAir = !this.isGrounded && this.stats.currentAirTime > 0.15 ? 1 : 0;
+            this._camAir = damp(this._camAir, bigAir, bigAir ? 2.5 : 1.8, dt);
+            const air = this._camAir;
+            dist = this.cameraOffset.z + speed01 * 1.8 - tuck * 1.3 + Math.min(hAir * 0.3, 6) + air * 2.4;
+            height = this.cameraOffset.y + speed01 * 0.5 - tuck * 0.75 + Math.min(hAir * 0.3, 6) + air * 1.6;
+            lookAhead = this.cameraLookAhead + speed01 * 7 - air * 2;
             posK = this.isGrounded ? 4.5 : 3.2;
-            targetFov = this._savedFov + speed01 * 14 + tuck * 3;
+            targetFov = this._savedFov + speed01 * 14 + tuck * 3 + air * 4;
             if (this.isGrounded) targetRoll = this.edgeAngle * 4 * DEG * Math.min(Math.abs(this.currentSpeed) / 25, 1);
         }
 
