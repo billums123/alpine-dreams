@@ -25,8 +25,16 @@ const EDGE_FALLOFF_END = 0.92;   // Fraction where height reaches zero
 const BASE_ROUGHNESS_AMPLITUDE = 18; // Low-frequency everywhere-roughness
 const VALLEY_DEPTH = 0.25; // How deep valleys between clusters carve (0-1)
 const CRAG_AMPLITUDE = 70; // Ridged-noise crags near cluster cores
-const FOREST_LO = 0.54;  // grove noise thresholds (higher = fewer, denser groves)
-const FOREST_HI = 0.66;
+const FOREST_LO = 0.55;  // grove noise thresholds (higher = fewer, denser groves)
+const FOREST_HI = 0.63;
+const FOREST_FREQ = 0.00125; // grove noise frequency (~800-unit groves)
+const BELT_FREQ = 0.0006;    // ridged "tree line" belts that wind along the land
+// Painted canopy: from afar, groves get a deep-pine floor so forests read as
+// masses; it fades out near the camera where the real trees take over.
+const CANOPY_COLOR = 0x2c5658;
+const CANOPY_NEAR = 420;
+const CANOPY_FAR = 1700;
+const CANOPY_STRENGTH = 0.5;
 
 // Apron (outer foothills)
 const APRON_SIZE = 18000;
@@ -91,6 +99,22 @@ function sstep(e0, e1, x) {
     return t * t * (3 - 2 * t);
 }
 
+/**
+ * Raw grove field 0..1 at (x,z) before altitude/slope: broad groves plus long
+ * ridged belts (tree lines that wind along valleys and ridge flanks).
+ */
+function forestField(x, z, seed) {
+    const g = sstep(FOREST_LO, FOREST_HI, fbm2(x * FOREST_FREQ, z * FOREST_FREQ, seed + 101, 3));
+    const b = fbm2(x * BELT_FREQ + 5.3, z * BELT_FREQ - 2.1, seed + 131, 3);
+    const belt = sstep(0.84, 0.95, 1 - Math.abs(b * 2 - 1)) * 0.62;
+    return Math.max(g, belt);
+}
+
+/** Altitude / slope falloff shared by every forest-density path. */
+function forestFalloff(alt, slope) {
+    return (1 - sstep(0.5, 0.78, alt)) * (1 - sstep(0.33, 0.58, slope));
+}
+
 export class Mountain {
     constructor(scene) {
         this.scene = scene;
@@ -135,10 +159,17 @@ export class Mountain {
         this.cliffs = [];
 
         // Shader uniforms for the detail layer
-        this.uniforms = { uTime: { value: 0 }, uDetail: { value: 1 } };
+        this.uniforms = {
+            uTime: { value: 0 },
+            uDetail: { value: 1 },
+            uCanopy: { value: new THREE.Color(CANOPY_COLOR) },
+            uCanopyFade: { value: new THREE.Vector3(CANOPY_NEAR, CANOPY_FAR, CANOPY_STRENGTH) },
+        };
         // Quality tier toggles the per-fragment detail at runtime (uniform branch).
         events.on('quality:change', ({ preset } = {}) => {
-            if (preset) this.uniforms.uDetail.value = preset.terrainDetail === false ? 0 : 1;
+            if (!preset) return;
+            this.uniforms.uDetail.value = preset.terrainDetail === false ? 0 : 1;
+            this.setCanopyDensity(preset.treeDensity);
         });
         this._tmpColor = new THREE.Color();
     }
@@ -353,6 +384,7 @@ export class Mountain {
 
         let detail = true;
         try { detail = !!getPreset().terrainDetail; } catch (e) { /* default on */ }
+        try { this.setCanopyDensity(getPreset().treeDensity); } catch (e) { /* default */ }
         this.uniforms.uDetail.value = detail ? 1 : 0;
         // Always installed; uDetail gates it so quality can change at runtime.
         this.installDetailShader(material);
@@ -369,16 +401,21 @@ export class Mountain {
         material.onBeforeCompile = (shader) => {
             shader.uniforms.uTime = uniforms.uTime;
             shader.uniforms.uDetail = uniforms.uDetail;
+            shader.uniforms.uCanopy = uniforms.uCanopy;
+            shader.uniforms.uCanopyFade = uniforms.uCanopyFade;
 
             shader.vertexShader = shader.vertexShader
-                .replace('#include <common>', '#include <common>\nvarying vec3 vAdWorld;')
-                .replace('#include <worldpos_vertex>', '#include <worldpos_vertex>\nvAdWorld = (modelMatrix * vec4(transformed, 1.0)).xyz;');
+                .replace('#include <common>', '#include <common>\nvarying vec3 vAdWorld;\nattribute float aForest;\nvarying float vForest;')
+                .replace('#include <worldpos_vertex>', '#include <worldpos_vertex>\nvAdWorld = (modelMatrix * vec4(transformed, 1.0)).xyz;\nvForest = aForest;');
 
             shader.fragmentShader = shader.fragmentShader
                 .replace('#include <common>', `#include <common>
 varying vec3 vAdWorld;
+varying float vForest;
 uniform float uTime;
 uniform float uDetail;
+uniform vec3 uCanopy;
+uniform vec3 uCanopyFade;
 float adHash(vec2 p) {
     p = fract(p * vec2(123.34, 456.21));
     p += dot(p, p + 45.32);
@@ -393,6 +430,15 @@ float adNoise(vec2 p) {
     float c = adHash(i + vec2(0.0, 1.0));
     float d = adHash(i + vec2(1.0, 1.0));
     return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}`)
+                .replace('#include <color_fragment>', `#include <color_fragment>
+{
+    // Painted forest canopy: groves read as deep-pine masses from afar,
+    // dissolving into snowy forest floor (plus real trees) up close.
+    float cd = length(vAdWorld - cameraPosition);
+    float cf = smoothstep(uCanopyFade.x, uCanopyFade.y, cd) * uCanopyFade.z;
+    float cov = smoothstep(0.7, 1.0, vForest);
+    diffuseColor.rgb = mix(diffuseColor.rgb, uCanopy, cov * cf);
 }`)
                 .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
 float adDist = length(vAdWorld - cameraPosition);
@@ -435,7 +481,7 @@ float adDist = length(vAdWorld - cameraPosition);
 #endif
 #include <opaque_fragment>`);
         };
-        material.customProgramCacheKey = () => 'alpine-terrain-detail-v2';
+        material.customProgramCacheKey = () => 'alpine-terrain-detail-v3';
     }
 
     // ===== ROCK OUTCROPS (1 instanced draw call) =====
@@ -585,29 +631,29 @@ float adDist = length(vAdWorld - cameraPosition);
         // Colors: same palette function as the terrain so the seam disappears
         const nrm = geo.attributes.normal.array;
         const colors = new Float32Array(pos.length);
+        const canopy = new Float32Array(pos.length / 3);
         const col = this._tmpColor;
         const s = this.colorSeed;
         for (let i = 0; i < pos.length; i += 3) {
             const x = pos[i], y = pos[i + 1], z = pos[i + 2];
             const nA = fbm2(x * 0.0016, z * 0.0016, s + 11, 3);
             const nB = fbm2(x * 0.0065, z * 0.0065, s + 23, 2);
-            const fRaw = fbm2(x * 0.0011, z * 0.0011, s + 101, 3);
-            // distant forests: grove noise, thinning with altitude
-            const forest = sstep(FOREST_LO, FOREST_HI, fRaw) * (1 - sstep(240, 480, y));
+            // distant forests: grove field, thinning with altitude (painted canopy in the shader)
+            const falloff = forestFalloff(Math.max(0, y - 160) / 400, 1 - nrm[i + 1]);
+            const forest = forestField(x, z, s) * falloff;
+            // The apron grid is coarse (~100 units) and its trees thin out with
+            // distance, so its canopy paint lightens away from the terrain edge
+            // (matching the terrain at the seam): painted-only woods read as decals.
+            const ex = Math.max(Math.abs(x) - this.width / 2, 0);
+            const ez = Math.max(Math.abs(z) - this.depth / 2, 0);
+            canopy[i / 3] = forest * (0.6 - 0.3 * sstep(0, 700, Math.sqrt(ex * ex + ez * ez)));
             this.snowColor(x, y, z, nrm[i], nrm[i + 1], nrm[i + 2], nA, nB, forest, col);
-            // Beyond the band of real tree instances, groves become a painted
-            // dark-pine carpet on the foothills (reads as distant woods through the haze)
-            if (forest > 0) {
-                const ex = Math.max(Math.abs(x) - this.width / 2, 0);
-                const ez = Math.max(Math.abs(z) - this.depth / 2, 0);
-                const edgeD = Math.sqrt(ex * ex + ez * ez);
-                col.lerp(C.pineDeep, forest * 0.38 * sstep(500, 1400, edgeD));
-            }
             colors[i] = col.r;
             colors[i + 1] = col.g;
             colors[i + 2] = col.b;
         }
         geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+        geo.setAttribute('aForest', new THREE.BufferAttribute(canopy, 1));
 
         this.apron = new THREE.Mesh(geo, this.material);
         this.apron.receiveShadow = true;
@@ -644,16 +690,12 @@ float adDist = length(vAdWorld - cameraPosition);
      * between groves), thinning toward the tree line and off steep slopes.
      */
     getForestDensity(x, z) {
-        const raw = fbm2(x * 0.0011, z * 0.0011, this.colorSeed + 101, 3);
-        const groves = sstep(FOREST_LO, FOREST_HI, raw);
+        const groves = forestField(x, z, this.colorSeed);
         if (groves <= 0) return 0;
         const inside = Math.abs(x) <= this.width / 2 && Math.abs(z) <= this.depth / 2;
         const h = inside ? this.getHeightAt(x, z) : this.getApronHeightAt(x, z);
-        const alt = h / this.maxHeight;
-        const altF = 1 - sstep(0.55, 0.8, alt);
-        let slopeF = 1;
-        if (inside) slopeF = 1 - sstep(0.35, 0.6, this.getSlopeAt(x, z));
-        return groves * altF * slopeF;
+        const alt = inside ? h / this.maxHeight : Math.max(0, h - 160) / 400;
+        return groves * forestFalloff(alt, inside ? this.getSlopeAt(x, z) : 0);
     }
 
     generateHeightMap() {
@@ -967,7 +1009,7 @@ float adDist = length(vAdWorld - cameraPosition);
             const z = positions[i + 2];
             this.colorNoiseA[v] = fbm2(x * 0.0016, z * 0.0016, s + 11, 3);
             this.colorNoiseB[v] = fbm2(x * 0.0065, z * 0.0065, s + 23, 2);
-            this.forestNoise[v] = fbm2(x * 0.0011, z * 0.0011, s + 101, 3);
+            this.forestNoise[v] = forestField(x, z, s);
         }
     }
 
@@ -1025,18 +1067,26 @@ float adDist = length(vAdWorld - cameraPosition);
             this.geometry.setAttribute('color', attr);
         }
         const colors = attr.array;
+        let canopyAttr = this.geometry.attributes.aForest;
+        if (!canopyAttr || canopyAttr.count !== positions.length / 3) {
+            canopyAttr = new THREE.BufferAttribute(new Float32Array(positions.length / 3), 1);
+            this.geometry.setAttribute('aForest', canopyAttr);
+        }
+        const canopy = canopyAttr.array;
         const color = this._tmpColor;
         const nAarr = this.colorNoiseA, nBarr = this.colorNoiseB, fArr = this.forestNoise;
         const invMax = 1 / this.maxHeight;
+        const invHW = 2 / this.width, invHD = 2 / this.depth;
 
         for (let i = 0, v = 0; i < positions.length; i += 3, v++) {
             const y = positions[i + 1];
             const ny = normals[i + 1];
             // Forest density (same formula as getForestDensity, from cached data)
-            let forest = sstep(FOREST_LO, FOREST_HI, fArr[v]);
-            if (forest > 0) {
-                forest *= (1 - sstep(0.55, 0.8, y * invMax)) * (1 - sstep(0.35, 0.6, 1 - Math.abs(ny)));
-            }
+            let forest = fArr[v];
+            if (forest > 0) forest *= forestFalloff(y * invMax, 1 - Math.abs(ny));
+            // lighter paint toward the rim so it meets the apron's value at the seam
+            const rim = Math.max(Math.abs(positions[i]) * invHW, Math.abs(positions[i + 2]) * invHD);
+            canopy[v] = forest * (1 - 0.4 * sstep(0.88, 1.0, rim));
             this.snowColor(positions[i], y, positions[i + 2], normals[i], ny, normals[i + 2],
                 nAarr[v], nBarr[v], forest, color);
             colors[i] = color.r;
@@ -1044,6 +1094,7 @@ float adDist = length(vAdWorld - cameraPosition);
             colors[i + 2] = color.b;
         }
         attr.needsUpdate = true;
+        canopyAttr.needsUpdate = true;
     }
 
     // ===== RUNTIME QUERIES =====
@@ -1214,6 +1265,15 @@ float adDist = length(vAdWorld - cameraPosition);
 
         this.createApron();
         this.createRocks();
+    }
+
+    /**
+     * Quality tiers thin the forest (Trees.setDensity); fade the painted canopy
+     * with it so thinned groves don't expose bare dark patches.
+     */
+    setCanopyDensity(d) {
+        const k = typeof d === 'number' ? Math.max(0, Math.min(1, d)) : 1;
+        this.uniforms.uCanopyFade.value.z = CANOPY_STRENGTH * Math.pow(k, 1.5);
     }
 
     /** Optional per-frame hook (drives the detail shader clock). */

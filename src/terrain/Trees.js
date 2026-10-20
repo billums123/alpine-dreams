@@ -18,22 +18,31 @@ import { events } from '../core/events.js';
 
 // ===== Palette (DESIGN_BRIEF §1.1) =====
 const COL = {
-    pineDeep: new THREE.Color(0x1c3a31),
-    pineMid: new THREE.Color(0x2c5545),
-    pineTip: new THREE.Color(0x4a7a5a),
+    // A step brighter/greener than the brief's swatches: after ACES and fog the
+    // authored values crushed to black specks at editor distance.
+    pineDeep: new THREE.Color(0x214536),
+    pineMid: new THREE.Color(0x336a50),
+    pineTip: new THREE.Color(0x5b9466),
     trunk: new THREE.Color(0x4a3426),
     snowTop: new THREE.Color(0xf8fafd),
     snowEdge: new THREE.Color(0xd6e2f0),
 };
 
-const BASE_TREE_COUNT = 4000;
-const APRON_TREE_SHARE = 0.16; // share of trees placed just beyond the terrain edge
-const APRON_BAND = 1300;       // how far beyond the terrain edge the forest continues
+// ~124 triangles per tree, so the forest is cheap; groves need numbers to read.
+const BASE_TREE_COUNT = 16000;
+const APRON_TREE_SHARE = 0.3;  // share of trees placed just beyond the terrain edge
+const APRON_BAND = 800;        // how far beyond the terrain edge the forest continues
 // Spatial chunking: each variant is split into ~1000-unit cells over the
 // terrain (plus 4 apron sides) so camera AND shadow frustum culling can skip
 // whole groves. Ski mode's 70-unit shadow frustum touches 1-2 chunks instead
 // of the whole 4000-tree forest.
 const CHUNK_SIZE = 1000;
+// Distance LOD: chunks whose nearest point is farther than LOD_FAR from the
+// camera swap to a ~18-triangle tree (same silhouette, colours, sway); they
+// come back below LOD_NEAR (hysteresis). Re-evaluated a few times per second.
+const LOD_NEAR = 1100;
+const LOD_FAR = 1300;
+const LOD_INTERVAL_MS = 200;
 
 // ===== Template variants =====
 // Each tier: base radius r, height h, base y. Template heights are ~10-13 units.
@@ -216,6 +225,39 @@ function buildTemplate(variantKey, seed = 7) {
     return merged;
 }
 
+/**
+ * Far-LOD tree: three stacked 6-sided cones (~18 tris) sized to the variant's
+ * tiers. Vertex colours go from the tier's pine green at the skirt to snow at
+ * the apex, so the average tone matches the full tree at a distance.
+ */
+function buildLodTemplate(variantKey) {
+    const v = VARIANTS[variantKey] || VARIANTS.pine;
+    const geos = [];
+    const tiers = 3;
+    const span = v.top - v.baseY;
+    for (let t = 0; t < tiers; t++) {
+        const f = t / (tiers - 1);
+        const r = THREE.MathUtils.lerp(v.r0 * 1.02, v.r1 * 1.6, f);
+        const yBase = v.baseY - 0.5 + span * f * 0.62;
+        const h = t === tiers - 1 ? v.top - yBase + 0.2 : span * 0.5;
+        const cone = new THREE.ConeGeometry(r, h, 6, 1, true, t * 0.5);
+        cone.translate(0, yBase + h / 2, 0);
+        const skirt = COL.pineDeep.clone().lerp(COL.pineMid, 0.55 + f * 0.3).multiplyScalar(1.3);
+        const snow = COL.snowEdge.clone().lerp(COL.snowTop, 0.5);
+        paint(cone, (x, y, z, c) => {
+            const k = THREE.MathUtils.clamp((y - yBase) / h, 0, 1);
+            // full trees show snow on every tier, so even the skirt carries some
+            c.copy(skirt).lerp(snow, 0.28 + 0.72 * Math.min(1, k * 1.15) * v.snow);
+        });
+        geos.push(cone);
+    }
+    const merged = dropDegenerate(mergeGeometries(geos.map(g => g.index ? g.toNonIndexed() : g)));
+    geos.forEach(g => g.dispose());
+    merged.computeVertexNormals();
+    merged.computeBoundingSphere();
+    return merged;
+}
+
 // ===== Shared (module-level) resources for standalone trees =====
 let _sharedTemplates = null;
 let _standaloneMaterial = null;
@@ -279,6 +321,11 @@ export class Trees {
 
         // Instanced meshes (one per variant)
         this.instancedMeshes = [];
+        // Far-LOD twins (share each chunk's instance matrices/colours) + chunk bounds
+        this.lodMeshes = [];
+        this.chunks = [];
+        this._lodNext = 0;
+        this._lodHooked = false;
 
         // Tree data for collision detection and knockdown
         this.treeData = [];
@@ -318,6 +365,7 @@ export class Trees {
             let n = 0;
             while (n < keys.length && keys[n] < d) n++;
             mesh.count = n;
+            if (mesh.userData.lodMesh) mesh.userData.lodMesh.count = n;
         }
         for (const e of this.treeData) e.culled = e.lod >= d;
     }
@@ -355,8 +403,9 @@ export class Trees {
             else if (r < 0.5 + d * 0.2) key = 'tall';
             else key = 'pine';
 
-            // scale 0.8..1.7: bigger in dense cores, younger at grove edges
-            const scale = 0.8 + 0.9 * Math.pow(Math.random(), 1.4) * (0.45 + 0.55 * d);
+            // scale ~1.1..2.6 (14-34 units, mature conifers next to a 1.8 skier):
+            // biggest in dense cores, younger at grove edges
+            const scale = (1.1 + 1.5 * Math.pow(Math.random(), 1.3) * (0.4 + 0.6 * d)) * (onApron ? 1.15 : 1);
 
             let rotX = (Math.random() - 0.5) * 0.06;
             let rotZ = (Math.random() - 0.5) * 0.06;
@@ -387,22 +436,22 @@ export class Trees {
             const x = (Math.random() - 0.5) * m.width * 0.98;
             const z = (Math.random() - 0.5) * m.depth * 0.98;
             const d = hasDensity ? m.getForestDensity(x, z) : 0.5;
-            // dense groves + a sprinkle of lone trees in the open
-            if (Math.random() > d * d * 0.95 + 0.004) continue;
+            // dense groves + a rare lone tree in the open
+            if (Math.random() > Math.pow(d, 1.6) + 0.0015) continue;
             if (!hasDensity && m.getSlopeAt(x, z) > 0.7) continue;
             if (!tryPlace(x, z, d, false)) continue;
             placed++;
 
             // small clumps: a few neighbors close by
-            const clump = d > 0.5 ? Math.floor(Math.random() * 3) : 0;
+            const clump = d > 0.35 ? 1 + Math.floor(Math.random() * 4) : 0;
             for (let c = 0; c < clump && placed < terrainTarget; c++) {
                 const a = Math.random() * Math.PI * 2;
-                const rr = 7 + Math.random() * 12;
+                const rr = 9 + Math.random() * 16;
                 const cx = x + Math.cos(a) * rr;
                 const cz = z + Math.sin(a) * rr;
                 if (Math.abs(cx) > hw * 0.99 || Math.abs(cz) > hd * 0.99) continue;
                 const cd = hasDensity ? m.getForestDensity(cx, cz) : d;
-                if (cd < 0.15) continue;
+                if (cd < 0.2) continue;
                 if (tryPlace(cx, cz, cd, false)) placed++;
             }
         }
@@ -416,9 +465,21 @@ export class Trees {
                 const x = (Math.random() - 0.5) * (m.width + APRON_BAND * 2);
                 const z = (Math.random() - 0.5) * (m.depth + APRON_BAND * 2);
                 if (Math.abs(x) < hw && Math.abs(z) < hd) continue;
+                // densest at the seam (matching the terrain groves), thinning outward
+                const ex = Math.max(Math.abs(x) - hw, 0), ez = Math.max(Math.abs(z) - hd, 0);
+                const thin = 1 - 0.75 * Math.min(1, Math.sqrt(ex * ex + ez * ez) / APRON_BAND);
                 const d = m.getForestDensity(x, z);
-                if (Math.random() > d) continue;
+                if (Math.random() > Math.pow(d, 1.4) * thin) continue;
                 if (tryPlace(x, z, d, true)) ap++;
+                // clumps, like the terrain groves
+                for (let c = d > 0.4 ? 2 : 0; c > 0 && ap < apronTarget; c--) {
+                    const a = Math.random() * Math.PI * 2;
+                    const rr = 10 + Math.random() * 18;
+                    const cx = x + Math.cos(a) * rr, cz = z + Math.sin(a) * rr;
+                    if (Math.abs(cx) < hw && Math.abs(cz) < hd) continue;
+                    const cd = m.getForestDensity(cx, cz);
+                    if (cd > 0.25 && tryPlace(cx, cz, cd, true)) ap++;
+                }
             }
         }
 
@@ -427,6 +488,11 @@ export class Trees {
             pine: buildTemplate('pine', 3),
             tall: buildTemplate('tall', 5),
             snowy: buildTemplate('snowy', 9),
+        };
+        const lodTemplates = {
+            pine: buildLodTemplate('pine'),
+            tall: buildLodTemplate('tall'),
+            snowy: buildLodTemplate('snowy'),
         };
         for (const key of ['pine', 'tall', 'snowy']) {
             const chunks = new Map();
@@ -447,11 +513,12 @@ export class Trees {
             for (const [ck, list] of chunks) {
                 list.sort((a, b) => a.lod - b.lod);
                 // Template geometry is shared by all chunks of a variant.
-                this.createInstancedMesh(key, templates[key], list, ck);
+                this.createInstancedMesh(key, templates[key], list, ck, lodTemplates[key]);
             }
-            if (chunks.size === 0) templates[key].dispose();
+            if (chunks.size === 0) { templates[key].dispose(); lodTemplates[key].dispose(); }
         }
         this.setDensity(density);
+        this._installLodHook();
 
     }
 
@@ -492,7 +559,7 @@ export class Trees {
         this.snowMaterial = new THREE.MeshStandardMaterial({ color: COL.snowTop, roughness: 0.8, flatShading: true });
     }
 
-    createInstancedMesh(variant, geometry, positions, chunkKey = '') {
+    createInstancedMesh(variant, geometry, positions, chunkKey = '', lodGeometry = null) {
         const count = positions.length;
         if (count === 0) return;
 
@@ -545,6 +612,58 @@ export class Trees {
         mesh.computeBoundingSphere();
         this.instancedMeshes.push(mesh);
         this.treeGroup.add(mesh);
+
+        if (!lodGeometry) return;
+        // Far LOD: same instances (shared attributes, so hideInstance and
+        // setDensity apply to both). It is cheap enough to keep casting shadows
+        // where the shadow frustum reaches, so tree shadows survive the swap.
+        const lod = new THREE.InstancedMesh(lodGeometry, this.instancedMaterial, count);
+        lod.instanceMatrix = mesh.instanceMatrix;
+        lod.instanceColor = mesh.instanceColor;
+        lod.castShadow = mesh.castShadow;
+        lod.receiveShadow = false;
+        lod.name = mesh.name + '_lod';
+        lod.visible = false;
+        lod.computeBoundingSphere();
+        mesh.userData.lodMesh = lod;
+        this.lodMeshes.push(lod);
+        this.treeGroup.add(lod);
+
+        const box = new THREE.Box3();
+        for (const p of positions) box.expandByPoint(pos.set(p.x, p.y, p.z));
+        box.max.y += 35;
+        this.chunks.push({ mesh, lod, box, far: false });
+    }
+
+    /**
+     * Pick each chunk's LOD from the camera that is about to render. Hooked on
+     * scene.onBeforeRender, which three calls before frustum projection, so the
+     * swap applies to the same frame. Throttled to a few checks per second.
+     */
+    _installLodHook() {
+        if (this._lodHooked) return;
+        this._lodHooked = true;
+        const prev = this.scene.onBeforeRender;
+        const self = this;
+        this.scene.onBeforeRender = function (renderer, scene, camera, ...rest) {
+            if (prev && prev !== THREE.Object3D.prototype.onBeforeRender) prev.call(this, renderer, scene, camera, ...rest);
+            if (camera && camera.isPerspectiveCamera) self.updateLod(camera);
+        };
+    }
+
+    /** Swap chunk LODs for `camera` (throttled unless `force`). */
+    updateLod(camera, force = false) {
+        const now = performance.now();
+        if (!force && now < this._lodNext) return;
+        this._lodNext = now + LOD_INTERVAL_MS;
+        const cp = camera.position;
+        for (const c of this.chunks) {
+            const d = c.box.distanceToPoint(cp);
+            const far = c.far ? d > LOD_NEAR : d > LOD_FAR;
+            c.far = far;
+            c.mesh.visible = !far;
+            c.lod.visible = far;
+        }
     }
 
     // Hide an instanced tree (set scale to 0)
@@ -601,8 +720,14 @@ export class Trees {
             geos.add(mesh.geometry);
             mesh.dispose?.();
         });
+        this.lodMeshes.forEach(mesh => {
+            this.treeGroup.remove(mesh);
+            geos.add(mesh.geometry);
+        });
         geos.forEach((g) => g.dispose());
         this.instancedMeshes = [];
+        this.lodMeshes = [];
+        this.chunks = [];
         this.treeData = [];
         this.fallbackTrees.forEach(t => this.scene.remove(t));
         this.fallbackTrees = [];

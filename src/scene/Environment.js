@@ -32,14 +32,16 @@ const FOG = {
 };
 
 const HAZE = {
-    day: new THREE.Color(0xf5c08e),
+    day: new THREE.Color(0xf6c88e),
     night: new THREE.Color(0x2c3d68),
-    dayStrength: 0.65,
+    dayStrength: 0.45,
     nightStrength: 0.5,
     exponent: 6.0,
 };
 
-const EXPOSURE = { day: 1.0, night: 0.85, blizzard: 1.05 };
+// Day sits a touch under 1.0: lit snow keeps highlight headroom under ACES
+// instead of compressing into milky white.
+const EXPOSURE = { day: 0.92, night: 0.85, blizzard: 1.05 };
 
 const easeInOut = (t) => t * t * (3 - 2 * t);
 

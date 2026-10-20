@@ -16,13 +16,15 @@ import { events } from '../core/events.js';
 import { getPreset } from '../core/quality.js';
 
 const DAY = {
-    sunColor: new THREE.Color(0xffd9a8),
-    sunIntensity: 3.25,
-    hemiSky: new THREE.Color(0x9db8e6),
-    hemiGround: new THREE.Color(0xc7d3e2),
-    hemiIntensity: 1.7,
-    fillColor: new THREE.Color(0x8fb0ff),
-    fillIntensity: 0.45,
+    // Strong warm key over a weaker, bluer sky fill: lit snow glows cream,
+    // shaded snow drops clearly into blue (a strong hemi flattened it to milk).
+    sunColor: new THREE.Color(0xffdfbc),
+    sunIntensity: 3.4,
+    hemiSky: new THREE.Color(0x7c9fda),
+    hemiGround: new THREE.Color(0xa9bad2),
+    hemiIntensity: 1.0,
+    fillColor: new THREE.Color(0x7f9ff0),
+    fillIntensity: 0.22,
 };
 
 // Night: a brighter, whiter moon key over a dimmer, cooler fill gives the

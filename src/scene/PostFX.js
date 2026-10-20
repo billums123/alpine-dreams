@@ -36,10 +36,10 @@ export const GradeShader = {
         uNight: { value: 0 },
         uVignette: { value: 0.25 },
         uGrain: { value: 0.02 },
-        uSaturation: { value: 1.05 },
+        uSaturation: { value: 1.08 },
         uShadowTint: { value: new THREE.Color(0x3a5a9a) },
-        uHighlightTint: { value: new THREE.Color(0xffd8a8) },
-        uSplit: { value: 0.08 },
+        uHighlightTint: { value: new THREE.Color(0xffe4c0) },
+        uSplit: { value: 0.1 },
         uSunScreen: { value: new THREE.Vector3(0.5, 0.5, 0) }, // xy uv, z visibility (0..1)
         uSunColor: { value: new THREE.Color(1.0, 0.82, 0.6) },
         uAspect: { value: 1 },
@@ -117,7 +117,8 @@ export const GradeShader = {
             // --- lift / gamma / gain (very gentle) + a soft S-curve for snow contrast
             c = c * 1.02 + 0.004;
             c = pow(max(c, 0.0), vec3(0.98));
-            c = mix(c, c * c * (3.0 - 2.0 * c), 0.14);
+            // (stronger by day: the wide editor view is mostly bright snow and read milky)
+            c = mix(c, c * c * (3.0 - 2.0 * c), mix(0.26, 0.14, uNight));
 
             // --- split toning: cool shadows, warm highlights (luma preserving offsets)
             float l = luma(c);

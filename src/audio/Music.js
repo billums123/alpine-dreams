@@ -8,12 +8,22 @@
  *   track bus (fader) ─┴─> musicIn ─> duckFilter ─> output (volume/mute) ─┐
  *                                                    sfxBus (Sfx owns gain) ┴─> limiter ─> masterOut ─> destination
  *
- * Tracks are step sequencers (16th notes) driven by a look-ahead scheduler on
- * the audio clock, so timing stays tight even when the main thread is busy.
- * Switching tracks crossfades (~1.5s). setDucked() lowpasses and dips the
- * music so wind/carve sfx read while skiing. setIntensity() drives an
- * adaptive hi-hat/shimmer layer (speed-reactive).
+ * Recorded tracks (assets/audio/music-build|ski|night.mp3) stream through
+ * <audio> elements wired into the graph with MediaElementAudioSourceNode, so
+ * they share the context, ducking and limiter without holding ~40MB of decoded
+ * PCM per track. The default "Auto mix" slot follows context: ski track while
+ * skiing, night track at night, build track otherwise. Next-track cycles
+ * Auto -> each recorded track pinned -> the synthesized tracks.
+ *
+ * Synth tracks are step sequencers (16th notes) driven by a look-ahead
+ * scheduler on the audio clock. They also stand in for any recorded track
+ * that fails to load. Every switch crossfades (~1.5s). setDucked() lowpasses
+ * and dips the music so wind/carve sfx read while skiing. setIntensity()
+ * drives the synth tracks' adaptive hi-hat/shimmer layer (speed-reactive).
  */
+
+import { events } from '../core/events.js';
+import { AUDIO_BASE } from './samples.js';
 
 const LOOKAHEAD_S = 0.14;       // how far ahead we schedule notes
 const SCHEDULER_MS = 30;        // how often the scheduler wakes up
@@ -24,6 +34,29 @@ const TRACKS = [
     { id: 1, name: 'Shimmer Drive', bpm: 110, level: 1.0 },
     { id: 2, name: 'Deep Ambient', bpm: 85, level: 1.8 },
     { id: 3, name: 'Golden Hour', bpm: 88, level: 1.05 },
+];
+
+// Recorded tracks. trim evens out their loudness (build -12.8, ski/night ~-14 LUFS);
+// fallback is the synth track that stands in if the file can't load.
+const SAMPLE_TRACKS = {
+    build: { file: 'music-build', name: 'Base Camp', trim: 0.87, fallback: 3 },
+    ski: { file: 'music-ski', name: 'Fall Line', trim: 1.0, fallback: 1 },
+    night: { file: 'music-night', name: 'Starlight', trim: 1.0, fallback: 2 },
+};
+// Fader level for recorded tracks: with the 0.55 music volume this sits the
+// mastered tracks ~-18 dB down, under the sfx.
+const SAMPLE_LEVEL = 0.23;
+const LOAD_GRACE_MS = 4000;     // wait this long for a recorded track before using its synth stand-in
+const PREFETCH_MS = 8000;       // then quietly fetch the other recorded tracks
+
+const PLAYLIST = [
+    { kind: 'auto', name: 'Auto mix' },
+    { kind: 'sample', key: 'build' },
+    { kind: 'sample', key: 'ski' },
+    { kind: 'sample', key: 'night' },
+    { kind: 'synth', id: 1 },
+    { kind: 'synth', id: 2 },
+    { kind: 'synth', id: 3 },
 ];
 
 function readStoredBool(key) {
@@ -55,6 +88,15 @@ export class Music {
         this.ducked = 0;
         this.intensity = 0;
 
+        // Recorded tracks + playlist
+        this.slot = 0;                 // index into PLAYLIST
+        this.sampleTracks = {};        // key -> { def, state, el, node, fader, loadStart, pauseTimer }
+        this.active = null;            // { kind:'sample', key } | { kind:'synth', id }
+        this.wantPlay = false;
+        this.skiing = false;
+        this.night = false;
+        this._readyCbs = [];
+
         this.bus = null;           // active track bus
         this.fadingBuses = new Set();
         this.schedulerId = null;
@@ -74,6 +116,17 @@ export class Music {
         const opts = { capture: true };
         ['pointerdown', 'keydown', 'touchstart'].forEach(t => document.addEventListener(t, this._unlock, opts));
         document.addEventListener('visibilitychange', this._onVisibility);
+
+        // Context for the Auto mix (tracked before unlock too)
+        events.on('ski:start', () => { this.skiing = true; this._apply(); });
+        events.on('ski:end', () => { this.skiing = false; this._apply(); });
+        events.on('env:night', (p) => { this.night = !!p?.night; this._apply(); });
+    }
+
+    /** Calls cb(ctx) once the shared AudioContext exists (immediately if it already does). */
+    onContext(cb) {
+        if (this.audioContext) cb(this.audioContext);
+        else this._readyCbs.push(cb);
     }
 
     _unlock() {
@@ -83,10 +136,13 @@ export class Music {
 
     _onVisibility() {
         if (!this.audioContext) return;
+        const el = this.active?.kind === 'sample' ? this.sampleTracks[this.active.key]?.el : null;
         if (document.hidden) {
             this.audioContext.suspend?.().catch(() => {});
+            el?.pause();
         } else {
             this.audioContext.resume?.().catch(() => {});
+            if (el && !this.isMuted) el.play()?.catch?.(() => {});
             // Don't try to "catch up" on missed steps
             if (this.bus) this.bus.nextTime = Math.max(this.bus.nextTime, this.audioContext.currentTime + 0.05);
         }
@@ -116,7 +172,7 @@ export class Music {
             this.limiter.release.value = 0.22;
 
             this.masterOut = ctx.createGain();
-            this.masterOut.gain.value = 0.95;
+            this.masterOut.gain.value = 1;
             this.limiter.connect(this.masterOut);
             this.masterOut.connect(ctx.destination);
 
@@ -152,6 +208,114 @@ export class Music {
         } catch (e) {
             console.warn('Could not start music:', e);
         }
+        if (this.audioContext) {
+            const cbs = this._readyCbs;
+            this._readyCbs = [];
+            cbs.forEach(cb => { try { cb(this.audioContext); } catch (e) { console.error('[audio] onContext callback threw:', e); } });
+        }
+    }
+
+    // ==========================================
+    // RECORDED TRACKS + PLAYLIST
+    // ==========================================
+    /** Lazily creates the <audio> element for a recorded track and starts loading it. */
+    _sampleTrack(key) {
+        let t = this.sampleTracks[key];
+        if (t) return t;
+        const def = SAMPLE_TRACKS[key];
+        t = { def, state: 'loading', el: null, node: null, fader: null, loadStart: performance.now(), pauseTimer: null };
+        this.sampleTracks[key] = t;
+        const ctx = this.audioContext;
+        try {
+            const el = new Audio();
+            el.preload = 'auto';
+            el.loop = true;
+            const ready = () => {
+                if (t.state !== 'loading') return;
+                t.state = 'ready';
+                this._apply();
+                this._schedulePrefetch();
+            };
+            el.addEventListener('canplay', ready);
+            el.addEventListener('canplaythrough', ready);
+            el.addEventListener('error', () => {
+                if (t.state === 'failed') return;
+                t.state = 'failed';
+                console.info(`[audio] music "${def.file}" unavailable, using synth track ${def.fallback}`);
+                this._apply();
+            });
+            el.src = AUDIO_BASE + def.file + '.mp3';
+            t.node = ctx.createMediaElementSource(el);
+            t.fader = ctx.createGain();
+            t.fader.gain.value = 0;
+            t.node.connect(t.fader);
+            t.fader.connect(this.musicIn);
+            t.el = el;
+            el.load();
+            // Re-check once the grace period ends so a slow load falls back to synth
+            setTimeout(() => this._apply(), LOAD_GRACE_MS + 50);
+        } catch (e) {
+            t.state = 'failed';
+        }
+        return t;
+    }
+
+    _schedulePrefetch() {
+        if (this._prefetchTimer) return;
+        this._prefetchTimer = setTimeout(() => {
+            Object.keys(SAMPLE_TRACKS).forEach(k => this._sampleTrack(k));
+        }, PREFETCH_MS);
+    }
+
+    /** What should be playing right now: { kind:'sample', key } | { kind:'synth', id } | null (wait). */
+    _resolve() {
+        const e = PLAYLIST[this.slot] || PLAYLIST[0];
+        if (e.kind === 'synth') return { kind: 'synth', id: e.id };
+        const key = e.kind === 'auto' ? (this.skiing ? 'ski' : this.night ? 'night' : 'build') : e.key;
+        const t = this._sampleTrack(key);
+        if (t.state === 'ready') return { kind: 'sample', key };
+        if (t.state === 'loading' && performance.now() - t.loadStart < LOAD_GRACE_MS) {
+            return this.active; // keep whatever is playing until it's ready
+        }
+        return { kind: 'synth', id: t.def.fallback };
+    }
+
+    /** Crossfade to whatever _resolve() picks. Cheap no-op when nothing changes. */
+    _apply() {
+        if (!this.audioContext || !this.wantPlay) return;
+        const next = this._resolve();
+        const cur = this.active;
+        if (!next) return;
+        if (cur && cur.kind === next.kind && cur.key === next.key && cur.id === next.id) return;
+        if (cur?.kind === 'sample') this._fadeSample(cur.key, false);
+        else if (cur?.kind === 'synth') this._fadeOutSynth();
+        if (next.kind === 'sample') this._fadeSample(next.key, true);
+        else this._startSynth(next.id);
+        this.active = next;
+    }
+
+    _fadeSample(key, on) {
+        const t = this.sampleTracks[key];
+        if (!t?.fader) return;
+        const now = this.audioContext.currentTime;
+        const g = t.fader.gain;
+        clearTimeout(t.pauseTimer);
+        g.cancelScheduledValues(now);
+        g.setValueAtTime(g.value, now);
+        if (on) {
+            if (!this.isMuted) t.el.play()?.catch?.(() => {});
+            g.linearRampToValueAtTime(SAMPLE_LEVEL * t.def.trim, now + CROSSFADE_S);
+        } else {
+            g.linearRampToValueAtTime(0, now + CROSSFADE_S);
+            t.pauseTimer = setTimeout(() => t.el.pause(), CROSSFADE_S * 1000 + 100);
+        }
+    }
+
+    _slotAvailable(e) {
+        if (e.kind === 'synth') return true;
+        const failed = (k) => this.sampleTracks[k]?.state === 'failed';
+        if (e.kind === 'sample') return !failed(e.key);
+        return Object.keys(SAMPLE_TRACKS).some(k => !failed(k));
     }
 
     // ==========================================
@@ -291,47 +455,65 @@ export class Music {
     }
 
     play() {
-        if (this.isPlaying || !this.audioContext) return;
+        this.wantPlay = true;
+        this._apply();
+    }
+
+    _startSynth(id) {
+        this.currentTrack = id;
+        this.bpm = (TRACKS.find(t => t.id === id) || TRACKS[0]).bpm;
+        this.beatTime = 60 / this.bpm;
         this.isPlaying = true;
-        this.bus = this._createBus(this.currentTrack);
+        this.bus = this._createBus(id);
         const now = this.audioContext.currentTime;
         this.bus.fader.gain.setValueAtTime(0, now);
-        const level = (TRACKS.find(t => t.id === this.currentTrack) || TRACKS[0]).level || 1;
+        const level = (TRACKS.find(t => t.id === id) || TRACKS[0]).level || 1;
         this.bus.fader.gain.linearRampToValueAtTime(level, now + CROSSFADE_S);
         this._startScheduler();
     }
 
-    toggleTrack() {
-        const idx = TRACKS.findIndex(t => t.id === this.currentTrack);
-        this.currentTrack = TRACKS[(idx + 1) % TRACKS.length].id;
-        this.bpm = TRACKS.find(t => t.id === this.currentTrack).bpm;
-        this.beatTime = 60 / this.bpm;
-
-        if (!this.audioContext) return this.currentTrack;
-
-        // Crossfade: old bus fades out (keeps playing during the fade), new fades in
-        const now = this.audioContext.currentTime;
-        if (this.bus) {
-            const old = this.bus;
-            this.fadingBuses.add(old);
-            const g = old.fader.gain;
-            g.cancelScheduledValues(now);
-            g.setValueAtTime(g.value, now);
-            g.linearRampToValueAtTime(0, now + CROSSFADE_S);
-            // Stop sequencing at fade end; let tails ring, then disconnect
-            old.fadeTimer = setTimeout(() => {
-                old.alive = false;
-                old.killTimer = setTimeout(() => this._disposeBus(old), 4000);
-            }, CROSSFADE_S * 1000 + 50);
-            this.bus = null;
-        }
+    /** Old bus fades out (keeps sequencing during the fade), then its tails ring out and it's disposed. */
+    _fadeOutSynth() {
         this.isPlaying = false;
-        this.play();
-        return this.currentTrack;
+        if (!this.bus) return;
+        const now = this.audioContext.currentTime;
+        const old = this.bus;
+        this.fadingBuses.add(old);
+        const g = old.fader.gain;
+        g.cancelScheduledValues(now);
+        g.setValueAtTime(g.value, now);
+        g.linearRampToValueAtTime(0, now + CROSSFADE_S);
+        old.fadeTimer = setTimeout(() => {
+            old.alive = false;
+            old.killTimer = setTimeout(() => this._disposeBus(old), 4000);
+        }, CROSSFADE_S * 1000 + 50);
+        this.bus = null;
+    }
+
+    /** Next playlist slot (Auto mix -> recorded tracks -> synth tracks), skipping ones that failed to load. */
+    toggleTrack() {
+        for (let i = 1; i <= PLAYLIST.length; i++) {
+            const idx = (this.slot + i) % PLAYLIST.length;
+            if (this._slotAvailable(PLAYLIST[idx])) { this.slot = idx; break; }
+        }
+        this._apply();
+        return this.slot;
     }
 
     getTrackName() {
-        return (TRACKS.find(t => t.id === this.currentTrack) || TRACKS[0]).name;
+        const e = PLAYLIST[this.slot] || PLAYLIST[0];
+        if (e.kind === 'auto') return e.name;
+        if (e.kind === 'sample') return SAMPLE_TRACKS[e.key].name;
+        return (TRACKS.find(t => t.id === e.id) || TRACKS[0]).name;
+    }
+
+    /** Debug snapshot (window.alpineDreams.music.debugInfo()). */
+    debugInfo() {
+        const tracks = {};
+        for (const [k, t] of Object.entries(this.sampleTracks)) {
+            tracks[k] = { state: t.state, paused: t.el ? t.el.paused : null, time: t.el ? +t.el.currentTime.toFixed(2) : null, gain: t.fader ? +t.fader.gain.value.toFixed(3) : null };
+        }
+        return { ctx: this.audioContext?.state || null, slot: this.slot, trackName: this.getTrackName(), active: this.active, muted: this.isMuted, tracks };
     }
 
     // ==========================================
@@ -676,6 +858,11 @@ export class Music {
             const now = this.audioContext.currentTime;
             this.output.gain.cancelScheduledValues(now);
             this.output.gain.setTargetAtTime(0, now, 0.12);
+            // Stop streaming the recorded track once it has faded out
+            clearTimeout(this._muteTimer);
+            this._muteTimer = setTimeout(() => {
+                if (this.isMuted) Object.values(this.sampleTracks).forEach(t => t.el?.pause());
+            }, 700);
         }
     }
 
@@ -687,6 +874,8 @@ export class Music {
             const now = this.audioContext.currentTime;
             this.output.gain.cancelScheduledValues(now);
             this.output.gain.setTargetAtTime(this.volume, now, 0.25);
+            clearTimeout(this._muteTimer);
+            if (this.active?.kind === 'sample') this.sampleTracks[this.active.key]?.el?.play()?.catch?.(() => {});
         }
     }
 
@@ -723,6 +912,12 @@ export class Music {
 
     stop() {
         this.isPlaying = false;
+        this.wantPlay = false;
+        if (this.active?.kind === 'sample') this._fadeSample(this.active.key, false);
+        this.active = null;
+        clearTimeout(this._muteTimer);
+        clearTimeout(this._prefetchTimer);
+        this._prefetchTimer = null;
         this.intervals.forEach(i => clearInterval(i));
         this.timeouts.forEach(t => clearTimeout(t));
         this.intervals = [];

@@ -11,9 +11,11 @@
 import * as THREE from 'three';
 
 const LAYERS = [
-    { radius: 6000, depth: 1500, hMin: 180, hMax: 1000, freq: 3.4, cols: 300, color: 0x8ea3c0, snow: 0xf2f0f0, haze: 0.0, fogScale: 1.0, seed: 11 },
-    { radius: 7600, depth: 1900, hMin: 300, hMax: 1450, freq: 2.7, cols: 320, color: 0xa9bad2, snow: 0xf2f0f0, haze: 0.16, fogScale: 0.95, seed: 23 },
-    { radius: 9400, depth: 2300, hMin: 450, hMax: 1950, freq: 2.2, cols: 340, color: 0xc0cde0, snow: 0xf4f2f2, haze: 0.3, fogScale: 0.9, seed: 37 },
+    // Deeper, bluer rock than the brief swatches: the editor looks into the sun,
+    // so these faces are backlit and must read as cool layered silhouettes.
+    { radius: 6000, depth: 1500, hMin: 180, hMax: 1000, freq: 3.4, cols: 300, color: 0x667b9e, snow: 0xeef1f6, haze: 0.0, fogScale: 1.0, seed: 11 },
+    { radius: 7600, depth: 1900, hMin: 300, hMax: 1450, freq: 2.7, cols: 320, color: 0x8496b6, snow: 0xeef1f6, haze: 0.2, fogScale: 0.95, seed: 23 },
+    { radius: 9400, depth: 2300, hMin: 450, hMax: 1950, freq: 2.2, cols: 340, color: 0xa3b3cc, snow: 0xf0f2f6, haze: 0.38, fogScale: 0.9, seed: 37 },
 ];
 
 // Cross-section profile: [fraction of ridge height, radial offset in units of depth]
@@ -197,7 +199,7 @@ export class DistantRanges {
             flatShading: true,
             roughness: 1,
             metalness: 0,
-            emissive: hazeColor.clone().multiplyScalar(0.12 + li * 0.1),
+            emissive: hazeColor.clone().multiplyScalar(0.05 + li * 0.08),
         });
         mat.userData.dayEmissive = mat.emissive.clone();
         const fogUniform = { value: layer.fogScale };
