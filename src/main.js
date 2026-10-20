@@ -1,19 +1,29 @@
 /**
  * Alpine Dreams - Ski Resort Builder
- * Main entry point
+ * Main entry point: constructs every system, wires the event bus and runs the frame loop.
  */
 
+import { events } from './core/events.js';
 import { SceneManager } from './scene/SceneManager.js';
 import { Lighting } from './scene/Lighting.js';
 import { Sky } from './scene/Sky.js';
 import { Snow } from './scene/Snow.js';
+import { Environment } from './scene/Environment.js';
 import { Mountain } from './terrain/Mountain.js';
 import { Trees } from './terrain/Trees.js';
+import { DistantRanges } from './terrain/DistantRanges.js';
 import { ObjectPlacer } from './controls/ObjectPlacer.js';
 import { CameraControls } from './controls/CameraControls.js';
 import { Skier } from './objects/Skier.js';
 import { UI } from './ui/UI.js';
+import { TouchControls } from './ui/TouchControls.js';
 import { Music } from './audio/Music.js';
+import { Sfx } from './audio/Sfx.js';
+
+const isTyping = (e) => {
+    const t = e.target;
+    return t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable);
+};
 
 class AlpineDreams {
     constructor() {
@@ -21,13 +31,16 @@ class AlpineDreams {
         this.lighting = null;
         this.sky = null;
         this.snow = null;
+        this.environment = null;
         this.mountain = null;
         this.trees = null;
+        this.distantRanges = null;
         this.objectPlacer = null;
         this.cameraControls = null;
         this.skier = null;
         this.ui = null;
         this.music = null;
+        this.sfx = null;
 
         this.isInitialized = false;
         this.isNight = false;
@@ -35,37 +48,32 @@ class AlpineDreams {
 
     async init() {
         try {
-            // Initialize scene manager
             this.sceneManager = new SceneManager('canvas');
             await this.sceneManager.init();
 
-            // Set up lighting
             this.lighting = new Lighting(this.sceneManager.scene);
             this.lighting.setup();
 
-            // Create sky and atmosphere
             this.sky = new Sky(this.sceneManager.scene);
             this.sky.create();
 
-            // Generate mountain terrain
+            this.distantRanges = new DistantRanges(this.sceneManager.scene);
+            this.distantRanges.create();
+
             this.mountain = new Mountain(this.sceneManager.scene);
             this.mountain.generate();
 
-            // Add trees
             this.trees = new Trees(this.sceneManager.scene, this.mountain);
             this.trees.populate();
 
-            // Set up snow particles
             this.snow = new Snow(this.sceneManager.scene);
             this.snow.create();
 
-            // Initialize camera controls
             this.cameraControls = new CameraControls(
                 this.sceneManager.camera,
                 this.sceneManager.renderer.domElement
             );
 
-            // Initialize object placer
             this.objectPlacer = new ObjectPlacer(
                 this.sceneManager.scene,
                 this.sceneManager.camera,
@@ -73,7 +81,6 @@ class AlpineDreams {
                 this.mountain
             );
 
-            // Initialize skier
             this.skier = new Skier(
                 this.sceneManager.scene,
                 this.mountain,
@@ -81,120 +88,109 @@ class AlpineDreams {
                 this.cameraControls
             );
             this.skier.trees = this.trees;
+            this.skier.objectPlacer = this.objectPlacer;
 
-            // Initialize UI
-            this.ui = new UI(this.objectPlacer, this.snow, this.sceneManager, this.mountain, this.skier, this.trees, this.cameraControls);
-            this.ui.init();
-
-            // Initialize background music (starts on first user interaction)
-            this.music = new Music();
-            this.music.init();
-
-            // Music toggle button
-            const musicBtn = document.getElementById('btn-toggle-music');
-            if (musicBtn) {
-                musicBtn.addEventListener('click', () => {
-                    const muted = this.music.toggleMute();
-                    musicBtn.textContent = muted ? '🔇' : '🔊';
-                    musicBtn.title = muted ? 'Unmute Music' : 'Mute Music';
-                });
-            }
-
-            // Track switch button
-            const trackBtn = document.getElementById('btn-switch-track');
-            if (trackBtn) {
-                trackBtn.addEventListener('click', () => {
-                    this.music.toggleTrack();
-                    const trackName = this.music.getTrackName();
-                    trackBtn.title = `Switch Track: ${trackName}`;
-                });
-            }
-
-            // Day/night toggle via N key, blizzard via M key
-            window.addEventListener('keydown', (e) => {
-                if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
-                if (e.key === 'n' || e.key === 'N') {
-                    this.toggleNightMode();
-                }
-                if (e.key === 'm' || e.key === 'M') {
-                    const blizzard = this.snow.toggleBlizzard();
-                    console.log(blizzard ? '🌨️ Blizzard ON' : '❄️ Blizzard OFF');
-                }
+            // Environment is the single owner of fog / clear colour / exposure / day-night blend.
+            this.environment = new Environment({
+                sceneManager: this.sceneManager,
+                lighting: this.lighting,
+                sky: this.sky,
+                snow: this.snow,
+                distantRanges: this.distantRanges,
+                objectPlacer: this.objectPlacer,
             });
 
-            // Start render loop
+            // Audio: Music owns the AudioContext (created on first gesture), Sfx rides on it.
+            this.music = new Music();
+            this.music.init();
+            this.sfx = new Sfx(this.music);
+            this.sfx.init();
+
+            this.ui = new UI(this.objectPlacer, this.snow, this.sceneManager, this.mountain, this.skier, this.trees, this.cameraControls);
+
+            this.wireEvents();
+            this.ui.init();
+            this.touchControls = new TouchControls(this.skier);
+            this.syncAudio();
+
+            window.addEventListener('keydown', (e) => {
+                if (isTyping(e) || e.ctrlKey || e.metaKey || e.altKey) return;
+                if (this.ui?.isTitleOpen) return;
+                if (e.code === 'KeyN') this.toggleNightMode();
+                else if (e.code === 'KeyM') this.toggleBlizzard();
+            });
+
             this.sceneManager.onUpdate = (delta) => this.update(delta);
             this.sceneManager.start();
 
             this.isInitialized = true;
 
-            // Hide loading screen
             setTimeout(() => {
-                document.getElementById('loading-screen').classList.add('hidden');
+                document.getElementById('loading-screen')?.classList.add('hidden');
             }, 500);
-
-            console.log('🏔️ Alpine Dreams initialized successfully!');
         } catch (error) {
             console.error('Failed to initialize Alpine Dreams:', error);
         }
     }
 
+    wireEvents() {
+        events.on('ui:toggle-music', () => { this.music.toggleMute(); this.syncAudio(); });
+        events.on('ui:next-track', () => { this.music.toggleTrack(); this.syncAudio(); });
+        events.on('ui:toggle-sfx', () => { this.sfx.toggleMute(); this.syncAudio(); });
+        events.on('ui:toggle-night', () => this.toggleNightMode());
+        events.on('ui:toggle-blizzard', () => this.toggleBlizzard());
+        events.on('ui:quality', ({ level } = {}) => { if (level) this.sceneManager.setQuality(level); });
+    }
+
+    syncAudio() {
+        this.ui?.setAudioState?.({
+            musicMuted: !!this.music?.isMuted,
+            sfxMuted: !!this.sfx?.isMuted,
+            trackName: this.music?.getTrackName?.(),
+        });
+    }
+
     toggleNightMode() {
-        this.isNight = !this.isNight;
+        this.environment.setNight(!this.environment.isNight);
+        this.isNight = this.environment.isNight;
+    }
 
-        if (this.lighting) this.lighting.setNightMode(this.isNight);
-        if (this.sky) this.sky.setNightMode(this.isNight);
-        if (this.snow) this.snow.setNightMode(this.isNight);
-
-        // Update fog and clear color
-        const scene = this.sceneManager.scene;
-        const renderer = this.sceneManager.renderer;
-        if (this.isNight) {
-            scene.fog.color.setHex(0x0a1525);
-            scene.fog.density = 0.00025;
-            renderer.setClearColor(0x050a15);
-            renderer.toneMappingExposure = 0.7;
-        } else {
-            scene.fog.color.setHex(0x9bb5ce);
-            scene.fog.density = 0.00018;
-            renderer.setClearColor(0x87ceeb);
-            renderer.toneMappingExposure = 1.0;
-        }
+    toggleBlizzard() {
+        const on = this.snow.toggleBlizzard();
+        this.environment.setBlizzard(on);
+        this.trees.setWindStrength?.(on ? 2.2 : 1);
+        return on;
     }
 
     update(delta) {
-        // Update snow particles
-        if (this.snow) {
-            this.snow.update(delta, this.sceneManager.camera);
-        }
+        const camera = this.sceneManager.camera;
+        const skiing = !!(this.skier && this.skier.isActive);
 
-        // Update sky (star twinkle, cloud drift)
-        if (this.sky) {
-            this.sky.update(delta);
-        }
-
-        // Update skier (if active, handles its own camera)
-        if (this.skier && this.skier.isActive) {
+        if (skiing) {
             this.skier.update(delta);
         } else {
-            // Update camera controls only when not skiing
-            if (this.cameraControls) {
-                this.cameraControls.update();
-            }
+            this.cameraControls.update(delta);
         }
 
-        // Update object placer (for animations)
-        if (this.objectPlacer) {
-            this.objectPlacer.update(delta);
-        }
+        this.environment.update(delta);
+        // Tight frustum while skiing keeps the skier's own shadow crisp (~0.05 u/texel at 2048).
+        this.lighting.setShadowFocus(
+            skiing ? this.skier.position : this.cameraControls.controls.target,
+            skiing ? 70 : 900
+        );
+
+        this.sky.update(delta, camera);
+        this.distantRanges.update?.(delta, camera);
+        this.mountain.update?.(delta);
+        this.trees.update?.(delta);
+        this.snow.update(delta, camera);
+        this.objectPlacer.update(delta);
     }
 }
 
-// Initialize application when DOM is ready
 document.addEventListener('DOMContentLoaded', () => {
     const app = new AlpineDreams();
-    app.init();
-
-    // Expose for debugging
     window.alpineDreams = app;
+    window.alpineEvents = events;
+    app.init();
 });

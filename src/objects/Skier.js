@@ -1,8 +1,230 @@
 /**
- * Skier - Player-controlled skier with realistic physics
+ * Skier - player-controlled skier: physics, tricks, ragdoll, camera and
+ * snow effects. No DOM and no audio here: everything the HUD and Sfx need
+ * is published on the event bus (see DESIGN_BRIEF §3.4).
+ *
+ * Public API (kept): constructor(scene, mountain, camera, cameraControls),
+ * place(x, z), remove(), update(delta), isActive, mesh, position,
+ * writable `trees` and `objectPlacer` fields.
  */
 
 import * as THREE from 'three';
+import { events } from '../core/events.js';
+import { getPreset } from '../core/quality.js';
+
+const TAU = Math.PI * 2;
+const DEG = Math.PI / 180;
+// Readout scale: cruising ~30-50 mph, a full tuck tops out around 70.
+const MPH = 1.35;
+
+// ---------- small math helpers (frame-rate independent smoothing) ----------
+const damp = (a, b, k, dt) => b + (a - b) * Math.exp(-k * dt);
+const dampAngle = (a, b, k, dt) => {
+    const d = Math.atan2(Math.sin(b - a), Math.cos(b - a));
+    return a + d * (1 - Math.exp(-k * dt));
+};
+/** Convert a "per 60fps frame" lerp factor into a dt-correct factor. */
+const lerpFactor = (perFrame, dt) => 1 - Math.pow(1 - perFrame, dt * 60);
+/** Convert a "per 60fps frame" multiplier into a dt-correct multiplier. */
+const frameMul = (perFrame, dt) => Math.pow(perFrame, dt * 60);
+const clamp01 = (v) => (v < 0 ? 0 : v > 1 ? 1 : v);
+const SIDES = [1, -1]; // +1 = left (+X local), -1 = right
+
+// Module temporaries (never escape a method).
+const _v1 = new THREE.Vector3();
+const _v2 = new THREE.Vector3();
+const _v3 = new THREE.Vector3();
+const _v4 = new THREE.Vector3();
+const _up = new THREE.Vector3(0, 1, 0);
+const _q1 = new THREE.Quaternion();
+const _q2 = new THREE.Quaternion();
+const _m1 = new THREE.Matrix4();
+const _s1 = new THREE.Vector3();
+
+function prefersReducedMotion() {
+    try {
+        return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+    } catch (e) {
+        return false;
+    }
+}
+
+// ---------- palette (DESIGN_BRIEF §1.1) ----------
+let _materials = null;
+function getMaterials() {
+    if (_materials) return _materials;
+    const M = (color, opts = {}) => new THREE.MeshStandardMaterial({
+        color, roughness: 0.72, metalness: 0, flatShading: true, ...opts,
+    });
+    _materials = {
+        jacket: M(0xE8553D, { roughness: 0.62 }),
+        jacketDark: M(0xA93A2A, { roughness: 0.7 }),
+        pants: M(0x22304A, { roughness: 0.85 }),
+        helmet: M(0xF4F6F8, { roughness: 0.32 }),
+        goggle: M(0xFFB347, { emissive: 0xFF9A2E, emissiveIntensity: 0.4, roughness: 0.15, metalness: 0.35 }),
+        strap: M(0x2B3A55, { roughness: 0.8 }),
+        skin: M(0xEDBE98, { roughness: 0.9 }),
+        glove: M(0x1D2433, { roughness: 0.85 }),
+        boot: M(0xE9EEF4, { roughness: 0.4 }),
+        bootCuff: M(0x2B3A55, { roughness: 0.6 }),
+        skiTop: M(0x2F6FD6, { roughness: 0.35 }),
+        skiStripe: M(0xFFB36B, { roughness: 0.4 }),
+        binding: M(0x3A3F4A, { roughness: 0.45, metalness: 0.3 }),
+        pole: M(0xAEB7C4, { roughness: 0.3, metalness: 0.55 }),
+        basket: M(0xE8553D, { roughness: 0.6 }),
+        snow: M(0xF5F8FC, { roughness: 0.95 }),
+    };
+    return _materials;
+}
+
+// ---------- geometry (built once, shared by every clone / exploded part) ----------
+let _geo = null;
+function getGeometries() {
+    if (_geo) return _geo;
+
+    // Ski: side profile extruded across its width, with an upturned tip and tail.
+    const skiW = 0.11;
+    const p = new THREE.Shape();
+    p.moveTo(-0.9, 0.07);
+    p.quadraticCurveTo(-0.82, 0.0, -0.68, 0.0);
+    p.lineTo(0.68, 0.0);
+    p.quadraticCurveTo(0.9, 0.0, 0.99, 0.17);
+    p.lineTo(0.965, 0.18);
+    p.quadraticCurveTo(0.87, 0.026, 0.68, 0.026);
+    p.lineTo(-0.68, 0.026);
+    p.quadraticCurveTo(-0.8, 0.026, -0.875, 0.085);
+    p.closePath();
+    const ski = new THREE.ExtrudeGeometry(p, { depth: skiW, bevelEnabled: false, curveSegments: 5 });
+    ski.rotateY(-Math.PI / 2);          // shape x -> world z, extrusion -> world -x
+    ski.translate(skiW / 2, 0, 0.06);
+    ski.computeVertexNormals();
+
+    _geo = {
+        ski,
+        skiStripe: new THREE.BoxGeometry(0.034, 0.006, 1.15).translate(0, 0.029, 0.04),
+        binding: new THREE.BoxGeometry(0.085, 0.05, 0.34).translate(0, 0.05, 0.0),
+        boot: new THREE.BoxGeometry(0.15, 0.2, 0.3, 1, 1, 1).translate(0, 0.1, 0.02),
+        bootCuff: new THREE.CylinderGeometry(0.085, 0.09, 0.08, 7).translate(0, 0.22, -0.01),
+        shin: new THREE.CapsuleGeometry(0.075, 0.3, 2, 7).translate(0, 0.22, 0),
+        thigh: new THREE.CapsuleGeometry(0.095, 0.26, 2, 7).translate(0, 0.22, 0),
+        pelvis: new THREE.BoxGeometry(0.32, 0.17, 0.22).translate(0, 0.03, 0),
+        jacket: new THREE.CapsuleGeometry(0.2, 0.3, 3, 8).scale(1, 1, 0.84).translate(0, 0.3, 0),
+        hem: new THREE.CylinderGeometry(0.2, 0.205, 0.07, 8).scale(1, 1, 0.86).translate(0, 0.03, 0),
+        collar: new THREE.CylinderGeometry(0.105, 0.14, 0.11, 8).translate(0, 0.65, 0.0),
+        face: new THREE.SphereGeometry(0.15, 8, 6).translate(0, 0.06, 0.015),
+        helmet: new THREE.SphereGeometry(0.2, 10, 5, 0, TAU, 0, Math.PI * 0.5).scale(1, 1, 1.06).translate(0, 0.115, -0.005),
+        goggles: new THREE.CylinderGeometry(0.207, 0.207, 0.085, 12, 1, true, -1.0, 2.0).translate(0, 0.085, 0),
+        strap: new THREE.CylinderGeometry(0.205, 0.205, 0.05, 12, 1, true, 1.0, TAU - 2.0).translate(0, 0.09, 0),
+        upperArm: new THREE.CapsuleGeometry(0.068, 0.17, 2, 6).translate(0, -0.13, 0),
+        forearm: new THREE.CapsuleGeometry(0.058, 0.16, 2, 6).translate(0, -0.12, 0),
+        glove: new THREE.IcosahedronGeometry(0.072, 0),
+        poleGrip: new THREE.CylinderGeometry(0.026, 0.022, 0.14, 6).translate(0, -0.03, 0),
+        poleShaft: new THREE.CylinderGeometry(0.011, 0.009, 1.1, 5).translate(0, -0.6, 0),
+        poleBasket: new THREE.CylinderGeometry(0.055, 0.055, 0.014, 8).translate(0, -1.0, 0),
+        snowball: new THREE.IcosahedronGeometry(0.235, 1),
+    };
+    return _geo;
+}
+
+// ---------- shaders for spray + trails ----------
+const SPRAY_VERT = /* glsl */`
+    attribute float aLife;
+    attribute float aSize;
+    uniform float uViewportHalfH;
+    varying float vLife;
+    varying float vNear;
+    void main() {
+        vLife = aLife;
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        vNear = smoothstep(1.2, 3.5, -mv.z); // fade puffs that brush the lens
+        gl_Position = projectionMatrix * mv;
+        if (aLife <= 0.0) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); gl_PointSize = 0.0; return; }
+        float grow = 1.0 + (1.0 - aLife) * 0.9;
+        gl_PointSize = clamp(aSize * grow * projectionMatrix[1][1] * uViewportHalfH / max(-mv.z, 0.1), 0.0, 64.0);
+    }
+`;
+const SPRAY_FRAG = /* glsl */`
+    uniform vec3 uLit;
+    uniform vec3 uShade;
+    uniform float uOpacity;
+    varying float vLife;
+    varying float vNear;
+    void main() {
+        vec2 pc = gl_PointCoord - 0.5;
+        float d = length(pc);
+        if (d > 0.5) discard;
+        float soft = smoothstep(0.5, 0.05, d);
+        float fade = smoothstep(0.0, 0.35, vLife);
+        // light from the upper side of each puff: warm top, cool underside
+        vec3 col = mix(uShade, uLit, clamp(0.85 - pc.y * 1.2 + pc.x * 0.2, 0.0, 1.0));
+        gl_FragColor = vec4(col, soft * fade * vNear * uOpacity);
+        #include <tonemapping_fragment>
+        #include <colorspace_fragment>
+    }
+`;
+const TRAIL_VERT = /* glsl */`
+    attribute float aBirth;
+    attribute float aEdge;
+    uniform float uTime;
+    uniform float uLife;
+    varying float vAlpha;
+    varying float vEdge;
+    #include <fog_pars_vertex>
+    void main() {
+        float age = uTime - aBirth;
+        vAlpha = aBirth < -1000.0 ? 0.0 : clamp(1.0 - age / uLife, 0.0, 1.0);
+        vEdge = aEdge;
+        vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+        gl_Position = projectionMatrix * mvPosition;
+        #include <fog_vertex>
+    }
+`;
+const TRAIL_FRAG = /* glsl */`
+    // Multiply-blended: outputs a linear factor that darkens the snow beneath,
+    // so tracks read as soft grooves in both sunlit and shaded snow.
+    uniform vec3 uColor;   // groove tint (linear multiplier)
+    uniform vec3 uRim;     // edge tint (linear multiplier)
+    uniform float uOpacity;
+    varying float vAlpha;
+    varying float vEdge;
+    #include <fog_pars_fragment>
+    void main() {
+        float e = abs(vEdge * 2.0 - 1.0);            // 0 centre .. 1 edge
+        float groove = 1.0 - smoothstep(0.6, 1.0, e);
+        vec3 tint = mix(uColor, uRim, smoothstep(0.3, 0.9, e));
+        float a = vAlpha * vAlpha * groove * uOpacity;
+        if (a < 0.003) discard;
+        vec3 f = mix(vec3(1.0), tint, a);
+        #ifdef USE_FOG
+            #ifdef FOG_EXP2
+                float fogF = 1.0 - exp(-fogDensity * fogDensity * vFogDepth * vFogDepth);
+            #else
+                float fogF = smoothstep(fogNear, fogFar, vFogDepth);
+            #endif
+            f = mix(f, vec3(1.0), fogF);
+        #endif
+        gl_FragColor = vec4(f, 1.0);
+    }
+`;
+
+const DAY_SPRAY = { lit: 0xF7EEDF, shade: 0xB7C8E2, opacity: 0.9 };
+const NIGHT_SPRAY = { lit: 0x8EA2CC, shade: 0x2E3D62, opacity: 0.75 };
+const DAY_TRAIL = { color: [0.74, 0.81, 0.95], rim: [0.9, 0.93, 0.99], opacity: 0.85 };
+const NIGHT_TRAIL = { color: [0.62, 0.68, 0.86], rim: [0.85, 0.88, 0.97], opacity: 0.8 };
+
+// ---------- trick naming (points table unchanged) ----------
+const SPIN_POINTS = { 180: 100, 360: 250, 540: 500, 720: 800, 900: 1200, 1080: 1800 };
+const FLIP_POINTS = [0, 300, 700, 1200, 2000];
+function nameTrick(spinDeg, flips, flipDir) {
+    const spin = spinDeg >= 180 ? spinDeg : 0;
+    if (flips > 0) {
+        const mult = flips === 1 ? '' : flips === 2 ? 'Double ' : flips === 3 ? 'Triple ' : 'Quad ';
+        if (!spin) return mult + (flipDir > 0 ? 'Frontflip' : 'Backflip');
+        if (flipDir > 0) return `${mult}Misty ${spin}`;
+        return `${mult}${(spin / 180) % 2 === 1 ? 'Rodeo' : 'Cork'} ${spin}`;
+    }
+    return spin ? `${spin} Spin` : '';
+}
 
 export class Skier {
     constructor(scene, mountain, camera, cameraControls) {
@@ -13,770 +235,747 @@ export class Skier {
 
         // Skier mesh
         this.mesh = null;
+        this.rig = null;
         this.isActive = false;
 
         // Physics state
         this.position = new THREE.Vector3();
         this.velocity = new THREE.Vector3();
-        this.rotation = 0; // Facing direction (radians)
-        this.edgeAngle = 0; // Lean angle for turning
-        this.turnMomentum = 0; // Smoothed turn rate for carving feel
+        this.rotation = 0;      // facing (radians)
+        this.edgeAngle = 0;     // -1..1 lean / turn input (smoothed)
+        this.turnMomentum = 0;  // smoothed turn rate
 
-        // Physics constants - realistic ski physics for large resort
-        this.gravity = 45; // Strong gravity for realistic slope acceleration
-        this.airGravity = 50; // Snappy jumps
+        // Physics constants (tuned at 60fps; applied dt-correctly)
+        this.gravity = 45;
+        this.airGravity = 50;
         this.airFriction = 0.003;
-        this.turnSpeed = 1.6; // How fast you can turn
-        this.maxSpeed = 120; // High top speed for long runs
-        this.brakeForce = 0.94; // Multiplier when braking
-        this.jumpForce = 3.5; // Jump force scaled for terrain
+        this.turnSpeed = 1.6;
+        this.maxSpeed = 120;
+        this.brakeForce = 0.94;
+        this.jumpForce = 3.5;
 
-        // Starting position for reset
         this.startPosition = new THREE.Vector3();
         this.startRotation = 0;
 
-        // Collision detection
-        this.collisionRaycaster = new THREE.Raycaster();
         this.lastJumpRampTime = 0;
-
-        // For natural launch detection - track terrain curvature
         this.lastTerrainSlope = 0;
         this.lastSlopeChangeTime = 0;
 
-        // State
         this.isGrounded = true;
         this.isJumping = false;
         this.verticalVelocity = 0;
         this.currentSpeed = 0;
+        this.isTucking = false;
+        this.isBraking = false;
 
-        // Flip/trick state
-        this.flipRotation = 0; // Current flip angle (radians)
-        this.flipVelocity = 0; // Flip angular velocity
+        // Flip / spin
+        this.flipRotation = 0;
+        this.flipVelocity = 0;
         this.isFlipping = false;
-        this.flipDirection = 0; // 1 = frontflip (forward), -1 = backflip (backward)
+        this.flipDirection = 0;
         this.trickLanded = false;
-
-        // Spin trick state (horizontal rotation)
-        this.spinRotation = 0; // Current spin angle
-        this.spinVelocity = 0; // Spin angular velocity
+        this.spinRotation = 0;
+        this.spinVelocity = 0;
         this.isSpinning = false;
-        this.totalSpinDegrees = 0; // Track total spin for scoring
+        this.totalSpinDegrees = 0;
 
-        // SCORING SYSTEM
+        // Scoring
         this.score = 0;
         this.comboMultiplier = 1;
         this.comboTimer = 0;
         this.lastTrickTime = 0;
+        this.stats = this._freshStats();
+        this.currentTrick = { spinDegrees: 0, hasFlip: false, flipDirection: 0, numFlips: 0, startTime: 0 };
 
-        // RUN STATISTICS
-        this.stats = {
-            maxSpeed: 0,
-            totalAirTime: 0,
-            currentAirTime: 0,
-            tricksLanded: 0,
-            tricksFailed: 0,
-            totalSpins: 0,
-            totalFlips: 0,
-            bestCombo: 0,
-            runStartTime: 0
-        };
-
-        // Track current trick for scoring on landing
-        this.currentTrick = {
-            spinDegrees: 0,
-            hasFlip: false,
-            flipDirection: 0,
-            startTime: 0
-        };
-
-        // Limit air hint display to first few jumps
         this.airHintCount = 0;
         this.maxAirHints = 3;
-
-        // Limit crash hint display
         this.crashHintCount = 0;
         this.maxCrashHints = 3;
 
-        // Body part references for animation
+        // Rig references (kept for compatibility with older callers)
         this.bodyParts = {
-            torso: null,
-            head: null,
-            leftArm: null,
-            rightArm: null,
-            leftLeg: null,
-            rightLeg: null
+            torso: null, head: null, leftArm: null, rightArm: null, leftLeg: null, rightLeg: null,
         };
+        this.skiMeshes = [];
 
-        // Snow spray particles
+        // Pose state (smoothed each frame)
+        this.pose = {
+            shinLean: 0.42, torsoLean: 0.32, torsoRoll: 0, torsoTwist: 0, headPitch: -0.2,
+            legDiff: 0, squash: 0, bob: 0,
+            arms: {
+                1: { sx: -0.55, sz: 0.3, elbow: -0.75, prx: 0.55, prz: 0.1 },
+                [-1]: { sx: -0.55, sz: -0.3, elbow: -0.75, prx: 0.55, prz: -0.1 },
+            },
+        };
+        this._plant = { 1: 0, [-1]: 0 };
+        this._prevAbsEdge = 0;
+        this._time = 0;
+
+        // Snow spray (single Points system)
         this.snowSprayParticles = null;
-        this.snowSprayPositions = null;
-        this.snowSprayVelocities = null;
-        this.snowSprayLifetimes = null;
-        this.maxSnowParticles = 100;
+        this.maxSnowParticles = 0;
+        this._spray = null;
+        this._sprayAccum = 0;
+        this._brakeAccum = 0;
 
-        // Input state
-        this.input = {
-            forward: false,
-            backward: false,
-            left: false,
-            right: false,
-            jump: false,
-            tuck: false // W/Up arrow for tucking (faster speed)
-        };
+        // Ski trails
+        this._trails = null;
 
-        // Tuck state for speed boost
-        this.isTucking = false;
+        // Input
+        this.input = { forward: false, backward: false, left: false, right: false, jump: false, tuck: false };
 
-        // Ragdoll state
+        // Ragdoll
         this.isRagdolling = false;
         this.ragdollTimer = 0;
-        this.ragdollDuration = 999; // Infinite until space pressed
+        this.ragdollDuration = 999;
         this.ragdollVelocity = new THREE.Vector3();
         this.ragdollAngularVel = new THREE.Vector3();
         this.detachedSkis = [];
-        this.skiMeshes = []; // References to ski meshes for detaching
-        this.bodyPartVelocities = {}; // Angular velocities for flailing body parts
+        this.bodyPartVelocities = {};
+        this.detachedBodyParts = [];
+        this.headSnowball = null;
+        this.headSnowballSize = 1;
+        this._fallingTrees = [];
+        this._pendingCrashName = null;
 
-        // Exploding body parts system
-        this.detachedBodyParts = []; // All detached body parts with physics
-        this.headSnowball = null; // The controllable head/snowball
-        this.headSnowballSize = 1; // Grows as it rolls
-
-        // Camera settings (scaled for large resort)
-        this.cameraOffset = new THREE.Vector3(0, 6, 15);
-        this.cameraLookAhead = 5;
-        this.cameraSmoothness = 0.06;
-        this.cameraYaw = 0; // Smoothed camera angle (follows movement direction, not facing)
-
-        // Stored camera state for restoration
+        // Camera rig
+        this.cameraOffset = new THREE.Vector3(0, 2.7, 7.4); // (height, distance) baseline
+        this.cameraLookAhead = 2.5;
+        this.cameraYaw = 0;
+        this._camOffset = new THREE.Vector3();
+        this._lookOffset = new THREE.Vector3();
+        this._camAnchorY = 0;
+        this._camRoll = 0;
+        this._camFov = 60;
+        this._trauma = 0;
+        this._shakeT = 0;
+        this._reducedMotion = prefersReducedMotion();
         this.savedCameraPosition = null;
         this.savedCameraTarget = null;
+        this._savedFov = 60;
 
-        // Audio (will be initialized when skier is placed)
-        this.audioContext = null;
-        this.skiSound = null;
-        this.isAudioInitialized = false;
+        // Slow motion (scales physics delta only)
+        this.timeScale = 1;
+        this._slowmo = 0;
 
-        // Trees reference for collision detection
+        // Collision bookkeeping
+        this._lastCollideTime = 0;
+        this._fallbackCollidables = null;
+        this._fallbackCollidablesTime = 0;
+        this._colliderCache = new WeakMap();
+
+        // External systems (set by main.js)
         this.trees = null;
+        this.objectPlacer = null;
 
-        // Bind methods
+        // Re-usable event payloads
+        this._tickTrick = { active: true, label: '', progress01: 0 };
+        this._tick = {
+            speed: 0, speedMph: 0, speed01: 0, maxSpeedMph: 0, grounded: true, tucking: false,
+            braking: false, switch: false, edge: 0, airTime: 0, totalAirTime: 0, score: 0, combo: 1,
+            tricksLanded: 0, ragdoll: false, trick: null, hint: null,
+        };
+        this._liveTrickKey = '';
+        this._pendingLand = null;
+
+        // Night tint for effects
+        this._night = false;
+        events.on('env:night', (p) => this._applyNight(!!(p && p.night)));
+
         this.onKeyDown = this.onKeyDown.bind(this);
         this.onKeyUp = this.onKeyUp.bind(this);
     }
 
+    _freshStats() {
+        return {
+            maxSpeed: 0, totalAirTime: 0, currentAirTime: 0, tricksLanded: 0, tricksFailed: 0,
+            totalSpins: 0, totalFlips: 0, bestCombo: 0, runStartTime: performance.now(),
+        };
+    }
+
+    // =====================================================================
+    // MESH
+    // =====================================================================
     createMesh() {
+        const mat = getMaterials();
+        const geo = getGeometries();
+        const mesh = (g, m, name) => {
+            const o = new THREE.Mesh(g, m);
+            if (name) o.name = name;
+            o.castShadow = true;
+            o.receiveShadow = true;
+            return o;
+        };
+
         const skier = new THREE.Group();
         skier.name = 'skier';
 
-        // Materials
-        const jacketMaterial = new THREE.MeshStandardMaterial({
-            color: 0x1565c0, // Blue jacket
-            roughness: 0.7
-        });
-        const pantsMaterial = new THREE.MeshStandardMaterial({
-            color: 0x212121, // Dark pants
-            roughness: 0.8
-        });
-        const skinMaterial = new THREE.MeshStandardMaterial({
-            color: 0xffcc99,
-            roughness: 0.9
-        });
-        const helmetMaterial = new THREE.MeshStandardMaterial({
-            color: 0xd32f2f, // Red helmet
-            roughness: 0.4,
-            metalness: 0.1
-        });
-        const gogglesMaterial = new THREE.MeshStandardMaterial({
-            color: 0x1a1a1a,
-            roughness: 0.1,
-            metalness: 0.8
-        });
-        const bootMaterial = new THREE.MeshStandardMaterial({
-            color: 0x37474f,
-            roughness: 0.5,
-            metalness: 0.3
-        });
-        const skiMaterial = new THREE.MeshStandardMaterial({
-            color: 0xf4511e,
-            roughness: 0.3,
-            metalness: 0.4
-        });
-        const poleMaterial = new THREE.MeshStandardMaterial({
-            color: 0x263238,
-            roughness: 0.3,
-            metalness: 0.7
-        });
-        const gloveMaterial = new THREE.MeshStandardMaterial({
-            color: 0x1a1a1a,
-            roughness: 0.8
+        // Skis live on the root so the landing squash doesn't flatten them.
+        this.skiMeshes = [];
+        [1, -1].forEach((side) => {
+            const g = new THREE.Group();
+            g.name = side === 1 ? 'leftSki' : 'rightSki';
+            g.position.set(side * 0.13, 0, 0);
+            g.add(mesh(geo.ski, mat.skiTop, 'skiBody'));
+            g.add(mesh(geo.skiStripe, mat.skiStripe, 'skiStripe'));
+            g.add(mesh(geo.binding, mat.binding, 'binding'));
+            skier.add(g);
+            this.skiMeshes.push(g);
         });
 
-        // Torso (jacket) - store reference for animation
-        const torsoGeometry = new THREE.CapsuleGeometry(0.22, 0.45, 8, 12);
-        const torso = new THREE.Mesh(torsoGeometry, jacketMaterial);
-        torso.position.set(0, 1.05, 0);
-        torso.rotation.x = 0.25;
+        // Everything else hangs off the rig (squash / stretch target).
+        const rig = new THREE.Group();
+        rig.name = 'skierRig';
+        skier.add(rig);
+        this.rig = rig;
+
+        // Legs: ankle -> shin pivot -> knee pivot -> thigh.
+        const legs = {};
+        [1, -1].forEach((side) => {
+            const root = new THREE.Group();
+            root.position.set(side * 0.13, 0.03, 0);
+            root.add(mesh(geo.boot, mat.boot, 'boot'));
+            root.add(mesh(geo.bootCuff, mat.bootCuff, 'bootCuff'));
+            const shinPivot = new THREE.Group();
+            shinPivot.position.set(0, 0.18, -0.01);
+            const shin = mesh(geo.shin, mat.pants, side === 1 ? 'leftShin' : 'rightShin');
+            shinPivot.add(shin);
+            const kneePivot = new THREE.Group();
+            kneePivot.position.set(0, 0.44, 0);
+            const thigh = mesh(geo.thigh, mat.pants, side === 1 ? 'leftThigh' : 'rightThigh');
+            kneePivot.add(thigh);
+            shinPivot.add(kneePivot);
+            root.add(shinPivot);
+            rig.add(root);
+            legs[side] = { root, shinPivot, kneePivot, shin, thigh };
+        });
+        this._legs = legs;
+
+        // Torso (pivot at the hip)
+        const torso = new THREE.Group();
         torso.name = 'torso';
-        skier.add(torso);
-        this.bodyParts.torso = torso;
+        torso.add(mesh(geo.pelvis, mat.pants, 'pelvis'));
+        torso.add(mesh(geo.jacket, mat.jacket, 'jacket'));
+        torso.add(mesh(geo.hem, mat.jacketDark, 'hem'));
+        torso.add(mesh(geo.collar, mat.jacketDark, 'collar'));
+        rig.add(torso);
 
         // Head
-        const headGeometry = new THREE.SphereGeometry(0.16, 12, 10);
-        const head = new THREE.Mesh(headGeometry, skinMaterial);
-        head.position.set(0, 1.52, 0.05);
+        const head = new THREE.Group();
         head.name = 'head';
-        skier.add(head);
-        this.bodyParts.head = head;
+        head.position.set(0, 0.72, 0.02);
+        const face = mesh(geo.face, mat.skin, 'face');
+        const helmet = mesh(geo.helmet, mat.helmet, 'helmet');
+        const goggles = mesh(geo.goggles, mat.goggle, 'goggles');
+        const strap = mesh(geo.strap, mat.strap, 'strap');
+        goggles.castShadow = false;
+        strap.castShadow = false;
+        head.add(face, helmet, goggles, strap);
+        torso.add(head);
 
-        // Helmet
-        const helmetGeometry = new THREE.SphereGeometry(0.19, 12, 10, 0, Math.PI * 2, 0, Math.PI * 0.6);
-        const helmet = new THREE.Mesh(helmetGeometry, helmetMaterial);
-        helmet.position.set(0, 1.56, 0.02);
-        helmet.rotation.x = -0.1;
-        helmet.name = 'helmet';
-        skier.add(helmet);
-        this.bodyParts.helmet = helmet;
-
-        // Goggles
-        const gogglesGeometry = new THREE.BoxGeometry(0.28, 0.08, 0.06);
-        const goggles = new THREE.Mesh(gogglesGeometry, gogglesMaterial);
-        goggles.position.set(0, 1.52, 0.16);
-        goggles.name = 'goggles';
-        skier.add(goggles);
-        this.bodyParts.goggles = goggles;
-
-        // Goggle strap
-        const strapGeometry = new THREE.TorusGeometry(0.17, 0.015, 6, 16, Math.PI);
-        const strap = new THREE.Mesh(strapGeometry, gogglesMaterial);
-        strap.position.set(0, 1.54, 0.02);
-        strap.rotation.x = Math.PI / 2;
-        strap.rotation.z = Math.PI;
-        strap.name = 'strap';
-        skier.add(strap);
-        this.bodyParts.strap = strap;
-
-        // Upper legs (thighs)
-        const thighs = [];
-        [-0.12, 0.12].forEach((x, i) => {
-            const thighGeometry = new THREE.CapsuleGeometry(0.09, 0.25, 6, 8);
-            const thigh = new THREE.Mesh(thighGeometry, pantsMaterial);
-            thigh.position.set(x, 0.62, 0.08);
-            thigh.rotation.x = 0.8;
-            thigh.name = i === 0 ? 'leftThigh' : 'rightThigh';
-            skier.add(thigh);
-            thighs.push(thigh);
+        // Arms: shoulder pivot -> elbow pivot -> hand
+        const arms = {};
+        [1, -1].forEach((side) => {
+            const shoulder = new THREE.Group();
+            shoulder.position.set(side * 0.235, 0.52, 0.0);
+            const upperArm = mesh(geo.upperArm, mat.jacket, side === 1 ? 'leftUpperArm' : 'rightUpperArm');
+            shoulder.add(upperArm);
+            const elbow = new THREE.Group();
+            elbow.position.set(0, -0.27, 0);
+            const forearm = mesh(geo.forearm, mat.jacket, side === 1 ? 'leftForearm' : 'rightForearm');
+            elbow.add(forearm);
+            const hand = new THREE.Group();
+            hand.position.set(0, -0.26, 0);
+            const glove = mesh(geo.glove, mat.glove, side === 1 ? 'leftGlove' : 'rightGlove');
+            hand.add(glove);
+            elbow.add(hand);
+            shoulder.add(elbow);
+            torso.add(shoulder);
+            arms[side] = { shoulder, elbow, hand, upperArm, forearm, glove };
         });
-        this.bodyParts.leftThigh = thighs[0];
-        this.bodyParts.rightThigh = thighs[1];
+        this._arms = arms;
 
-        // Lower legs (shins)
-        const shins = [];
-        [-0.14, 0.14].forEach((x, i) => {
-            const shinGeometry = new THREE.CapsuleGeometry(0.07, 0.22, 6, 8);
-            const shin = new THREE.Mesh(shinGeometry, pantsMaterial);
-            shin.position.set(x, 0.32, 0.18);
-            shin.rotation.x = 0.15;
-            shin.name = i === 0 ? 'leftShin' : 'rightShin';
-            skier.add(shin);
-            shins.push(shin);
+        // Poles: children of the rig, glued to the hands each frame.
+        const poles = {};
+        [1, -1].forEach((side) => {
+            const pole = new THREE.Group();
+            pole.name = side === 1 ? 'leftPole' : 'rightPole';
+            pole.add(mesh(geo.poleGrip, mat.glove, 'poleGrip'));
+            pole.add(mesh(geo.poleShaft, mat.pole, 'poleShaft'));
+            pole.add(mesh(geo.poleBasket, mat.basket, 'poleBasket'));
+            rig.add(pole);
+            poles[side] = pole;
         });
-        this.bodyParts.leftShin = shins[0];
-        this.bodyParts.rightShin = shins[1];
+        this._poles = poles;
 
-        // Ski boots
-        [-0.15, 0.15].forEach(x => {
-            const bootGeometry = new THREE.BoxGeometry(0.12, 0.14, 0.28);
-            const boot = new THREE.Mesh(bootGeometry, bootMaterial);
-            boot.position.set(x, 0.1, 0.22);
-            skier.add(boot);
+        this._torso = torso;
+        this._head = head;
+        this.bodyParts = {
+            torso, head, helmet, goggles, strap,
+            leftThigh: legs[1].thigh, rightThigh: legs[-1].thigh,
+            leftShin: legs[1].shin, rightShin: legs[-1].shin,
+            leftLeg: legs[1], rightLeg: legs[-1],
+            leftArm: { upperArm: arms[1].upperArm, forearm: arms[1].forearm, glove: arms[1].glove },
+            rightArm: { upperArm: arms[-1].upperArm, forearm: arms[-1].forearm, glove: arms[-1].glove },
+            leftPole: poles[1], rightPole: poles[-1],
+        };
+
+        // Meshes that fly apart on a crash (head is handled as the snowball).
+        this._explodeMeshes = [];
+        rig.traverse((o) => {
+            if (o.isMesh && o.parent !== head) this._explodeMeshes.push(o);
         });
 
-        // Arms - natural skiing stance with bent elbows, hands forward
-        const arms = { left: {}, right: {} };
-        [-1, 1].forEach(side => {
-            const armKey = side === -1 ? 'left' : 'right';
-
-            // Upper arm - hangs down from shoulder, slightly forward and out
-            const upperArmGeometry = new THREE.CapsuleGeometry(0.055, 0.2, 6, 8);
-            const upperArm = new THREE.Mesh(upperArmGeometry, jacketMaterial);
-            upperArm.position.set(side * 0.24, 0.95, 0.05);
-            upperArm.rotation.z = side * -0.4; // Slight angle outward
-            upperArm.rotation.x = 0.3; // Slight forward angle
-            upperArm.name = armKey + 'UpperArm';
-            skier.add(upperArm);
-            arms[armKey].upperArm = upperArm;
-
-            // Forearm - bent at elbow ~90 degrees, pointing forward
-            const forearmGeometry = new THREE.CapsuleGeometry(0.045, 0.18, 6, 8);
-            const forearm = new THREE.Mesh(forearmGeometry, jacketMaterial);
-            forearm.position.set(side * 0.32, 0.72, 0.22);
-            forearm.rotation.z = side * -0.15;
-            forearm.rotation.x = 1.1; // Pointing forward/down
-            forearm.name = armKey + 'Forearm';
-            skier.add(forearm);
-            arms[armKey].forearm = forearm;
-
-            // Glove/hand - in front of body at waist level
-            const gloveGeometry = new THREE.SphereGeometry(0.05, 8, 6);
-            const glove = new THREE.Mesh(gloveGeometry, gloveMaterial);
-            glove.position.set(side * 0.28, 0.58, 0.42);
-            glove.name = armKey + 'Glove';
-            skier.add(glove);
-            arms[armKey].glove = glove;
-        });
-        this.bodyParts.leftArm = arms.left;
-        this.bodyParts.rightArm = arms.right;
-
-        // Skis - create as groups so they can be detached
-        this.skiMeshes = [];
-        [-0.15, 0.15].forEach((x, index) => {
-            const skiGroup = new THREE.Group();
-            skiGroup.name = index === 0 ? 'leftSki' : 'rightSki';
-            skiGroup.position.set(x, 0, 0);
-
-            // Main ski body
-            const skiGeometry = new THREE.BoxGeometry(0.1, 0.02, 1.9);
-            const ski = new THREE.Mesh(skiGeometry, skiMaterial);
-            ski.position.set(0, 0.015, 0.25);
-            skiGroup.add(ski);
-
-            // Ski tip (curved up)
-            const tipGeometry = new THREE.BoxGeometry(0.1, 0.02, 0.2);
-            const tip = new THREE.Mesh(tipGeometry, skiMaterial);
-            tip.position.set(0, 0.04, 1.15);
-            tip.rotation.x = -0.5;
-            skiGroup.add(tip);
-
-            // Ski tail (slightly curved up)
-            const tailGeometry = new THREE.BoxGeometry(0.1, 0.02, 0.12);
-            const tail = new THREE.Mesh(tailGeometry, skiMaterial);
-            tail.position.set(0, 0.03, -0.72);
-            tail.rotation.x = 0.3;
-            skiGroup.add(tail);
-
-            // Binding
-            const bindingGeometry = new THREE.BoxGeometry(0.08, 0.06, 0.18);
-            const binding = new THREE.Mesh(bindingGeometry, bootMaterial);
-            binding.position.set(0, 0.05, 0.22);
-            skiGroup.add(binding);
-
-            skier.add(skiGroup);
-            this.skiMeshes.push(skiGroup);
-        });
-
-        // Poles - as groups that can be animated with arms
-        const poles = { left: null, right: null };
-        [-1, 1].forEach(side => {
-            const poleKey = side === -1 ? 'left' : 'right';
-
-            // Create pole group anchored at grip position
-            const poleGroup = new THREE.Group();
-            poleGroup.name = poleKey + 'Pole';
-
-            // Default hand position (matches glove position)
-            const handX = side * 0.28;
-            const handY = 0.58;
-            const handZ = 0.42;
-            poleGroup.position.set(handX, handY, handZ);
-
-            // Pole grip - at origin of group (hand holds here)
-            const gripGeometry = new THREE.CylinderGeometry(0.025, 0.02, 0.12, 8);
-            const grip = new THREE.Mesh(gripGeometry, gloveMaterial);
-            grip.position.set(0, 0, 0);
-            grip.rotation.x = Math.PI / 2 + 0.3; // Angled forward
-            grip.rotation.z = side * 0.1;
-            poleGroup.add(grip);
-
-            // Pole wrist strap
-            const strapLoopGeo = new THREE.TorusGeometry(0.03, 0.005, 6, 12);
-            const strapLoop = new THREE.Mesh(strapLoopGeo, poleMaterial);
-            strapLoop.position.set(0, 0.02, 0.04);
-            strapLoop.rotation.x = Math.PI / 2;
-            poleGroup.add(strapLoop);
-
-            // Pole shaft - extends down and back from grip
-            const shaftGeometry = new THREE.CylinderGeometry(0.012, 0.01, 1.1, 8);
-            const shaft = new THREE.Mesh(shaftGeometry, poleMaterial);
-            shaft.position.set(side * 0.02, -0.45, -0.25);
-            shaft.rotation.x = 0.5;
-            shaft.rotation.z = side * -0.05;
-            poleGroup.add(shaft);
-
-            // Pole basket - ring near bottom
-            const basketRingGeo = new THREE.TorusGeometry(0.045, 0.008, 8, 16);
-            const basketRing = new THREE.Mesh(basketRingGeo, poleMaterial);
-            basketRing.position.set(side * 0.03, -0.85, -0.48);
-            basketRing.rotation.x = Math.PI / 2 + 0.5;
-            poleGroup.add(basketRing);
-
-            // Basket spokes
-            for (let i = 0; i < 4; i++) {
-                const spokeGeo = new THREE.CylinderGeometry(0.003, 0.003, 0.08, 4);
-                const spoke = new THREE.Mesh(spokeGeo, poleMaterial);
-                const angle = (i / 4) * Math.PI * 2;
-                spoke.position.set(
-                    side * 0.03 + Math.cos(angle) * 0.022,
-                    -0.85,
-                    -0.48 + Math.sin(angle) * 0.022
-                );
-                spoke.rotation.x = Math.PI / 2 + 0.5;
-                poleGroup.add(spoke);
-            }
-
-            // Pole tip - pointed end
-            const tipGeometry = new THREE.ConeGeometry(0.015, 0.06, 6);
-            const tipMaterial = new THREE.MeshStandardMaterial({
-                color: 0x888888,
-                roughness: 0.3,
-                metalness: 0.8
-            });
-            const tip = new THREE.Mesh(tipGeometry, tipMaterial);
-            tip.position.set(side * 0.035, -0.95, -0.55);
-            tip.rotation.x = Math.PI + 0.5;
-            poleGroup.add(tip);
-
-            skier.add(poleGroup);
-            poles[poleKey] = poleGroup;
-        });
-        this.bodyParts.leftPole = poles.left;
-        this.bodyParts.rightPole = poles.right;
-
-        skier.castShadow = true;
-        skier.traverse(child => {
-            if (child.isMesh) {
-                child.castShadow = true;
-                child.receiveShadow = true;
-            }
-        });
-
+        this.mesh = skier;
+        this.resetBodyParts();
         return skier;
     }
 
+    // =====================================================================
+    // SNOW SPRAY (one Points draw call, soft round puffs)
+    // =====================================================================
     createSnowSpray() {
-        // Create particle geometry
+        const preset = getPreset();
+        const N = Math.max(40, Math.min(300, preset.sprayParticles | 0 || 200));
+        if (this._spray && this._spray.N === N) return;
+        if (this._spray) this._disposeSpray();
+
         const geometry = new THREE.BufferGeometry();
-        this.snowSprayPositions = new Float32Array(this.maxSnowParticles * 3);
-        this.snowSprayVelocities = [];
-        this.snowSprayLifetimes = new Float32Array(this.maxSnowParticles);
+        const pos = new Float32Array(N * 3);
+        const life01 = new Float32Array(N);
+        const size = new Float32Array(N);
+        const posAttr = new THREE.BufferAttribute(pos, 3).setUsage(THREE.DynamicDrawUsage);
+        const lifeAttr = new THREE.BufferAttribute(life01, 1).setUsage(THREE.DynamicDrawUsage);
+        const sizeAttr = new THREE.BufferAttribute(size, 1).setUsage(THREE.DynamicDrawUsage);
+        geometry.setAttribute('position', posAttr);
+        geometry.setAttribute('aLife', lifeAttr);
+        geometry.setAttribute('aSize', sizeAttr);
 
-        // Initialize all particles as inactive (lifetime = 0)
-        for (let i = 0; i < this.maxSnowParticles; i++) {
-            this.snowSprayPositions[i * 3] = 0;
-            this.snowSprayPositions[i * 3 + 1] = -100; // Below ground
-            this.snowSprayPositions[i * 3 + 2] = 0;
-            this.snowSprayVelocities.push(new THREE.Vector3());
-            this.snowSprayLifetimes[i] = 0;
-        }
-
-        geometry.setAttribute('position', new THREE.BufferAttribute(this.snowSprayPositions, 3));
-
-        // Snow particle material
-        const material = new THREE.PointsMaterial({
-            color: 0xffffff,
-            size: 0.15,
+        const tint = this._night ? NIGHT_SPRAY : DAY_SPRAY;
+        const material = new THREE.ShaderMaterial({
+            uniforms: {
+                uViewportHalfH: { value: 450 },
+                uLit: { value: new THREE.Color(tint.lit) },
+                uShade: { value: new THREE.Color(tint.shade) },
+                uOpacity: { value: tint.opacity },
+            },
+            vertexShader: SPRAY_VERT,
+            fragmentShader: SPRAY_FRAG,
             transparent: true,
-            opacity: 0.8,
             depthWrite: false,
-            blending: THREE.AdditiveBlending
         });
 
-        this.snowSprayParticles = new THREE.Points(geometry, material);
-        this.scene.add(this.snowSprayParticles);
+        const points = new THREE.Points(geometry, material);
+        points.name = 'skierSnowSpray';
+        points.frustumCulled = false;
+        points.renderOrder = 2;
+
+        this._spray = {
+            N, points, geometry, material, pos, life01, size, posAttr, lifeAttr, sizeAttr,
+            vel: new Float32Array(N * 3),
+            life: new Float32Array(N),
+            maxLife: new Float32Array(N),
+            cursor: 0,
+            alive: 0,
+        };
+        this.snowSprayParticles = points;
+        this.maxSnowParticles = N;
     }
 
+    _disposeSpray() {
+        const s = this._spray;
+        if (!s) return;
+        if (s.points.parent) s.points.parent.remove(s.points);
+        s.geometry.dispose();
+        s.material.dispose();
+        this._spray = null;
+        this.snowSprayParticles = null;
+    }
+
+    _emitParticle(x, y, z, vx, vy, vz, life, size) {
+        const s = this._spray;
+        if (!s) return;
+        const i = s.cursor;
+        s.cursor = (s.cursor + 1) % s.N;
+        const i3 = i * 3;
+        s.pos[i3] = x; s.pos[i3 + 1] = y; s.pos[i3 + 2] = z;
+        s.vel[i3] = vx; s.vel[i3 + 1] = vy; s.vel[i3 + 2] = vz;
+        s.life[i] = life;
+        s.maxLife[i] = life;
+        s.size[i] = size;
+        s.life01[i] = 1;
+        s.alive = Math.max(s.alive, 1);
+    }
+
+    /** Back-compat: spray in `direction` from `position` with 0..1+ intensity. */
     emitSnowSpray(position, direction, intensity) {
-        if (!this.snowSprayParticles) return;
-
-        // Find inactive particles to reuse
-        const particlesToEmit = Math.floor(intensity * 5);
-        let emitted = 0;
-
-        for (let i = 0; i < this.maxSnowParticles && emitted < particlesToEmit; i++) {
-            if (this.snowSprayLifetimes[i] <= 0) {
-                // Position at ski edge
-                const offset = (Math.random() - 0.5) * 0.3;
-                this.snowSprayPositions[i * 3] = position.x + offset;
-                this.snowSprayPositions[i * 3 + 1] = position.y + 0.1;
-                this.snowSprayPositions[i * 3 + 2] = position.z + offset;
-
-                // Velocity - spray outward and up
-                const spreadAngle = (Math.random() - 0.5) * 0.8;
-                const speed = 2 + Math.random() * 3 * intensity;
-                this.snowSprayVelocities[i].set(
-                    direction.x * speed + Math.sin(spreadAngle) * speed * 0.5,
-                    1.5 + Math.random() * 2 * intensity,
-                    direction.z * speed + Math.cos(spreadAngle) * speed * 0.5
-                );
-
-                // Lifetime
-                this.snowSprayLifetimes[i] = 0.5 + Math.random() * 0.5;
-                emitted++;
-            }
+        const n = Math.max(1, Math.round(intensity * 5));
+        for (let k = 0; k < n; k++) {
+            const sp = 2 + Math.random() * 3 * intensity;
+            this._emitParticle(
+                position.x, position.y + 0.1, position.z,
+                direction.x * sp + this.velocity.x * 0.5, 1.5 + Math.random() * 2, direction.z * sp + this.velocity.z * 0.5,
+                0.5 + Math.random() * 0.4, 0.25 + Math.random() * 0.3,
+            );
         }
+    }
 
-        this.snowSprayParticles.geometry.attributes.position.needsUpdate = true;
+    /** Radial burst of snow (landing, crash, collisions, tree knock). */
+    sprayBurst(x, y, z, count, power = 1, inheritVel = 0.3) {
+        const s = this._spray;
+        if (!s) return;
+        count = Math.min(count | 0, s.N >> 1);
+        for (let k = 0; k < count; k++) {
+            const a = Math.random() * TAU;
+            const r = (1.5 + Math.random() * 3.5) * power;
+            this._emitParticle(
+                x + Math.cos(a) * 0.3, y + 0.08, z + Math.sin(a) * 0.3,
+                Math.cos(a) * r + this.velocity.x * inheritVel,
+                (1.2 + Math.random() * 2.6) * Math.sqrt(power),
+                Math.sin(a) * r + this.velocity.z * inheritVel,
+                0.55 + Math.random() * 0.6, 0.22 + Math.random() * 0.28 * Math.min(power, 1.2),
+            );
+        }
     }
 
     updateSnowSpray(delta) {
-        if (!this.snowSprayParticles) return;
+        const s = this._spray;
+        if (!s || s.alive === 0) return;
 
-        const gravity = 8;
-        let anyActive = false;
-
-        for (let i = 0; i < this.maxSnowParticles; i++) {
-            if (this.snowSprayLifetimes[i] > 0) {
-                anyActive = true;
-                this.snowSprayLifetimes[i] -= delta;
-
-                // Update position
-                this.snowSprayPositions[i * 3] += this.snowSprayVelocities[i].x * delta;
-                this.snowSprayPositions[i * 3 + 1] += this.snowSprayVelocities[i].y * delta;
-                this.snowSprayPositions[i * 3 + 2] += this.snowSprayVelocities[i].z * delta;
-
-                // Apply gravity
-                this.snowSprayVelocities[i].y -= gravity * delta;
-
-                // Fade out by moving below ground when dead
-                if (this.snowSprayLifetimes[i] <= 0) {
-                    this.snowSprayPositions[i * 3 + 1] = -100;
+        const drag = Math.exp(-1.6 * delta);
+        const g = 9;
+        let alive = 0;
+        for (let i = 0; i < s.N; i++) {
+            if (s.life[i] <= 0) {
+                if (s.life01[i] !== 0) s.life01[i] = 0;
+                continue;
+            }
+            s.life[i] -= delta;
+            const i3 = i * 3;
+            s.vel[i3] *= drag;
+            s.vel[i3 + 2] *= drag;
+            s.vel[i3 + 1] = s.vel[i3 + 1] * drag - g * delta;
+            s.pos[i3] += s.vel[i3] * delta;
+            s.pos[i3 + 1] += s.vel[i3 + 1] * delta;
+            s.pos[i3 + 2] += s.vel[i3 + 2] * delta;
+            // settle on the snow instead of sinking through it
+            if (s.vel[i3 + 1] < 0) {
+                const gy = this.mountain.getHeightAt(s.pos[i3], s.pos[i3 + 2]) + 0.05;
+                if (s.pos[i3 + 1] < gy) {
+                    s.pos[i3 + 1] = gy;
+                    s.vel[i3] *= 0.4; s.vel[i3 + 1] = 0; s.vel[i3 + 2] *= 0.4;
+                    s.life[i] = Math.min(s.life[i], 0.25);
                 }
             }
+            s.life01[i] = s.life[i] > 0 ? s.life[i] / s.maxLife[i] : 0;
+            if (s.life[i] > 0) alive++;
         }
+        s.alive = alive;
+        s.posAttr.needsUpdate = true;
+        s.lifeAttr.needsUpdate = true;
+        s.sizeAttr.needsUpdate = true;
 
-        if (anyActive) {
-            this.snowSprayParticles.geometry.attributes.position.needsUpdate = true;
+        const pr = Math.min(window.devicePixelRatio || 1, getPreset().pixelRatioCap || 2);
+        s.material.uniforms.uViewportHalfH.value = (window.innerHeight * pr) * 0.5;
+    }
+
+    // =====================================================================
+    // CONTACT SHADOW: a soft blob under the boots so the skier always reads as
+    // planted (the low sun throws the real shadow well off to the side).
+    // =====================================================================
+    _createContactShadow() {
+        if (this._contact) return;
+        const size = 64;
+        const c = document.createElement('canvas');
+        c.width = c.height = size;
+        const g = c.getContext('2d');
+        const grad = g.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+        grad.addColorStop(0, 'rgba(255,255,255,1)');
+        grad.addColorStop(0.45, 'rgba(255,255,255,0.55)');
+        grad.addColorStop(1, 'rgba(255,255,255,0)');
+        g.fillStyle = grad;
+        g.fillRect(0, 0, size, size);
+        const tex = new THREE.CanvasTexture(c);
+        const mat = new THREE.MeshBasicMaterial({
+            color: 0x1b2742, map: tex, transparent: true, opacity: 0.32,
+            depthWrite: false, polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3,
+        });
+        const geo = new THREE.PlaneGeometry(1.5, 2.4);
+        geo.rotateX(-Math.PI / 2);
+        const m = new THREE.Mesh(geo, mat);
+        m.name = 'skierContactShadow';
+        m.renderOrder = 1;
+        m.frustumCulled = false;
+        m.userData.isDecal = true;
+        const up = new THREE.Vector3(0, 1, 0);
+        const qN = new THREE.Quaternion();
+        const qY = new THREE.Quaternion();
+        const n = new THREE.Vector3();
+        m.onBeforeRender = () => {
+            const ragdoll = this.isRagdolling && this.headSnowball;
+            const p = ragdoll ? this.headSnowball.mesh.position : this.position;
+            const gy = this.mountain.getHeightAt(p.x, p.z);
+            const h = Math.max(0, p.y - gy);
+            const k = Math.max(0, 1 - h / 6);           // fades as the skier gets air
+            this._sampleNormal(p.x, p.z, n);
+            qN.setFromUnitVectors(up, n);
+            qY.setFromAxisAngle(up, this.rotation);
+            m.quaternion.copy(qN).multiply(qY);
+            m.position.set(p.x, gy + 0.06, p.z);
+            const sc = (ragdoll ? 1.4 : 1) * (0.7 + 0.3 * k);
+            m.scale.set(sc, 1, sc);
+            mat.opacity = 0.32 * k * (this.mesh && this.mesh.visible ? 1 : ragdoll ? 0.8 : 0);
+            m.updateMatrixWorld();
+        };
+        this._contact = m;
+    }
+
+    // =====================================================================
+    // SKI TRAILS (two fading ribbons pressed into the snow)
+    // =====================================================================
+    _createTrails() {
+        if (this._trails) return;
+        const N = 300;
+        const tint = this._night ? NIGHT_TRAIL : DAY_TRAIL;
+        const material = new THREE.ShaderMaterial({
+            uniforms: THREE.UniformsUtils.merge([
+                THREE.UniformsLib.fog,
+                {
+                    uTime: { value: 0 },
+                    uLife: { value: 16 },
+                    uColor: { value: new THREE.Color().setRGB(...tint.color) },
+                    uRim: { value: new THREE.Color().setRGB(...tint.rim) },
+                    uOpacity: { value: tint.opacity },
+                },
+            ]),
+            vertexShader: TRAIL_VERT,
+            fragmentShader: TRAIL_FRAG,
+            transparent: true,
+            depthWrite: false,
+            fog: true,
+            toneMapped: false,
+            blending: THREE.CustomBlending,
+            blendEquation: THREE.AddEquation,
+            blendSrc: THREE.DstColorFactor,
+            blendDst: THREE.ZeroFactor,
+            blendSrcAlpha: THREE.ZeroFactor,
+            blendDstAlpha: THREE.OneFactor,
+            polygonOffset: true,
+            polygonOffsetFactor: -2,
+            polygonOffsetUnits: -2,
+        });
+
+        // Static index: segment i joins point i and i+1 (point = 2 verts).
+        const idx = new Uint16Array((N - 1) * 6);
+        for (let i = 0; i < N - 1; i++) {
+            const a = i * 2, b = a + 1, c = a + 2, d = a + 3;
+            idx.set([a, c, b, b, c, d], i * 6);
+        }
+        const edge = new Float32Array(N * 2);
+        for (let i = 0; i < N; i++) { edge[i * 2] = 0; edge[i * 2 + 1] = 1; }
+
+        const ribbons = [1, -1].map((side) => {
+            const geometry = new THREE.BufferGeometry();
+            const pos = new Float32Array(N * 2 * 3);
+            const birth = new Float32Array(N * 2).fill(-1e6);
+            const posAttr = new THREE.BufferAttribute(pos, 3).setUsage(THREE.DynamicDrawUsage);
+            const birthAttr = new THREE.BufferAttribute(birth, 1).setUsage(THREE.DynamicDrawUsage);
+            geometry.setAttribute('position', posAttr);
+            geometry.setAttribute('aBirth', birthAttr);
+            geometry.setAttribute('aEdge', new THREE.BufferAttribute(edge, 1));
+            geometry.setIndex(new THREE.BufferAttribute(idx, 1));
+            geometry.setDrawRange(0, 0);
+            const m = new THREE.Mesh(geometry, material);
+            m.name = 'skiTrail';
+            m.frustumCulled = false;
+            m.renderOrder = 1;
+            return { side, geometry, pos, birth, posAttr, birthAttr, mesh: m, count: 0, lastX: 0, lastZ: 0, broken: true };
+        });
+
+        this._trails = { N, material, ribbons, time: 0 };
+    }
+
+    _clearTrails() {
+        const t = this._trails;
+        if (!t) return;
+        for (const r of t.ribbons) {
+            r.count = 0;
+            r.broken = true;
+            r.birth.fill(-1e6);
+            r.geometry.setDrawRange(0, 0);
+            r.birthAttr.needsUpdate = true;
         }
     }
 
-    // Place skier at position and start ski mode
-    place(x, z) {
-        // Create mesh if needed
-        if (!this.mesh) {
-            this.mesh = this.createMesh();
+    _trailWritePoint(r, i, cx, cz, sx, sz, birth) {
+        const hw = 0.07;
+        const lx = cx - sx * hw, lz = cz - sz * hw;
+        const rx = cx + sx * hw, rz = cz + sz * hw;
+        const o = i * 6;
+        r.pos[o] = lx; r.pos[o + 1] = this.mountain.getHeightAt(lx, lz) + 0.045; r.pos[o + 2] = lz;
+        r.pos[o + 3] = rx; r.pos[o + 4] = this.mountain.getHeightAt(rx, rz) + 0.045; r.pos[o + 5] = rz;
+        r.birth[i * 2] = birth;
+        r.birth[i * 2 + 1] = birth;
+    }
+
+    _trailPush(r, cx, cz, sx, sz, birth) {
+        const N = this._trails.N;
+        if (r.count >= N) {
+            // shift everything one point toward the start (oldest drops off)
+            r.pos.copyWithin(0, 6);
+            r.birth.copyWithin(0, 2);
+            r.count = N - 1;
         }
+        this._trailWritePoint(r, r.count, cx, cz, sx, sz, birth);
+        r.count++;
+    }
 
-        // Get terrain height at position
+    updateTrails(delta) {
+        const t = this._trails;
+        if (!t) return;
+        t.time += delta;
+        t.material.uniforms.uTime.value = t.time;
+
+        const onSnow = this.isGrounded && !this.isRagdolling && Math.abs(this.currentSpeed) > 1.5;
+        // Lateral (left) vector of the skis, and motion direction
+        const fx = Math.sin(this.rotation), fz = Math.cos(this.rotation);
+        const lx = fz, lz = -fx; // +X local == left
+        const spacing = 0.7;
+
+        for (const r of t.ribbons) {
+            if (!onSnow) {
+                r.broken = true;
+                continue;
+            }
+            const cx = this.position.x + lx * 0.13 * r.side - fx * 0.15;
+            const cz = this.position.z + lz * 0.13 * r.side - fz * 0.15;
+            if (r.broken || r.count === 0) {
+                if (r.count > 0) {
+                    // Break: an invisible bridge so separate strips never connect.
+                    const last = (r.count - 1) * 6;
+                    const px = (r.pos[last] + r.pos[last + 3]) * 0.5;
+                    const pz = (r.pos[last + 2] + r.pos[last + 5]) * 0.5;
+                    this._trailPush(r, px, pz, lx, lz, -1e6);
+                    this._trailPush(r, cx, cz, lx, lz, -1e6);
+                }
+                this._trailPush(r, cx, cz, lx, lz, t.time);
+                this._trailPush(r, cx, cz, lx, lz, t.time); // live head point
+                r.lastX = cx; r.lastZ = cz;
+                r.broken = false;
+            } else {
+                const dx = cx - r.lastX, dz = cz - r.lastZ;
+                if (dx * dx + dz * dz > spacing * spacing) {
+                    this._trailPush(r, cx, cz, lx, lz, t.time);
+                    r.lastX = cx; r.lastZ = cz;
+                } else {
+                    // keep the head glued to the ski
+                    this._trailWritePoint(r, r.count - 1, cx, cz, lx, lz, t.time);
+                }
+            }
+            r.geometry.setDrawRange(0, Math.max(0, r.count - 1) * 6);
+            r.posAttr.needsUpdate = true;
+            r.birthAttr.needsUpdate = true;
+        }
+    }
+
+    _applyNight(night) {
+        this._night = night;
+        // Night readability: hi-vis gear glows faintly (reflective trim) and the
+        // goggles catch the light, so the skier never reads as a flat silhouette.
+        const mats = getMaterials();
+        ['jacket', 'jacketDark', 'helmet', 'skiTop', 'skiStripe', 'basket', 'boot'].forEach((k) => {
+            const m = mats[k];
+            if (!m) return;
+            if (night) m.emissive.copy(m.color).multiplyScalar(0.28);
+            else m.emissive.setRGB(0, 0, 0);
+        });
+        mats.goggle.emissiveIntensity = night ? 1.4 : 0.4;
+        const st = night ? NIGHT_SPRAY : DAY_SPRAY;
+        if (this._spray) {
+            const u = this._spray.material.uniforms;
+            u.uLit.value.setHex(st.lit);
+            u.uShade.value.setHex(st.shade);
+            u.uOpacity.value = st.opacity;
+        }
+        const tt = night ? NIGHT_TRAIL : DAY_TRAIL;
+        if (this._trails) {
+            const u = this._trails.material.uniforms;
+            u.uColor.value.setRGB(...tt.color);
+            u.uRim.value.setRGB(...tt.rim);
+            u.uOpacity.value = tt.opacity;
+        }
+    }
+
+    // =====================================================================
+    // LIFECYCLE
+    // =====================================================================
+    place(x, z) {
+        if (this.isActive) this.remove({ instant: true });
+        if (!this.mesh) this.createMesh();
+
         const y = this.mountain.getHeightAt(x, z);
-
-        // Set position
         this.position.set(x, y, z);
         this.mesh.position.copy(this.position);
+        this.mesh.visible = true;
+        this.skiMeshes.forEach((s) => { s.visible = true; });
 
-        // Calculate initial facing direction (downhill)
-        const normal = this.mountain.getNormalAt(x, z);
-        this.rotation = Math.atan2(normal.x, normal.z);
-        this.mesh.rotation.y = this.rotation;
+        const n = this._sampleNormal(x, z, _v1);
+        this.rotation = Math.atan2(n.x, n.z);
+        this.mesh.rotation.set(0, this.rotation, 0);
 
-        // Save starting position for reset (R key)
         this.startPosition.set(x, y, z);
         this.startRotation = this.rotation;
 
-        // Reset physics
-        this.velocity.set(0, 0, 0);
-        this.verticalVelocity = 0;
-        this.currentSpeed = 0;
-        this.isGrounded = true;
-        this.isJumping = false;
-        this.edgeAngle = 0;
-        this.turnMomentum = 0;
-        this.cameraYaw = this.rotation; // Initialize camera behind facing direction
+        this._resetMotion();
 
-        // Reset scoring and stats
         this.score = 0;
         this.comboMultiplier = 1;
         this.lastTrickTime = 0;
-        this.stats = {
-            maxSpeed: 0,
-            totalAirTime: 0,
-            currentAirTime: 0,
-            tricksLanded: 0,
-            tricksFailed: 0,
-            totalSpins: 0,
-            totalFlips: 0,
-            bestCombo: 0,
-            runStartTime: performance.now()
-        };
+        this.stats = this._freshStats();
+        this.timeScale = 1;
+        this._slowmo = 0;
 
-        // Add to scene
         this.scene.add(this.mesh);
 
-        // Create snow spray particles
-        if (!this.snowSprayParticles) {
-            this.createSnowSpray();
+        this.createSnowSpray();
+        this.scene.add(this._spray.points);
+        this._createContactShadow();
+        this.scene.add(this._contact);
+        this._createTrails();
+        this._clearTrails();
+        this._trails.ribbons.forEach((r) => this.scene.add(r.mesh));
+
+        // Camera: save the editor view, then swoop in from it.
+        // If the camera is still flying back from a previous run, save the
+        // flight's destination (the real editor view), not a mid-flight frame.
+        const dest = this.cameraControls.flightDestination ? this.cameraControls.flightDestination() : null;
+        if (dest) {
+            this.savedCameraPosition = dest.position.clone();
+            this.savedCameraTarget = dest.target.clone();
+            this._savedFov = dest.fov ?? this._savedFov ?? 60;
+            this.cameraControls.cancelFly();
+        } else {
+            this.savedCameraPosition = this.camera.position.clone();
+            this.savedCameraTarget = this.cameraControls.controls.target.clone();
+            this._savedFov = this.camera.fov || 60;
         }
-
-        // Save camera state
-        this.savedCameraPosition = this.camera.position.clone();
-        this.savedCameraTarget = this.cameraControls.controls.target.clone();
-
-        // Disable orbit controls
+        this._camFov = this._savedFov;
+        this._camOffset.copy(this.camera.position).sub(this.position);
+        this._lookOffset.copy(this.cameraControls.controls.target).sub(this.position);
+        this._camAnchorY = this.position.y;
+        this._camRoll = 0;
+        this._trauma = 0;
         this.cameraControls.setEnabled(false);
 
-        // Set up input listeners
         window.addEventListener('keydown', this.onKeyDown);
         window.addEventListener('keyup', this.onKeyUp);
 
-        // Initialize audio
-        this.initAudio();
-
         this.isActive = true;
-
-        // Show HUD
-        document.getElementById('skier-hud').classList.remove('hidden');
-        document.getElementById('object-palette').style.display = 'none';
-        document.getElementById('quick-actions').style.display = 'none';
-        document.getElementById('controls-hint').style.display = 'none';
-
+        events.emit('ski:start', { x, z });
         return this.mesh;
     }
 
-    // Remove skier and restore editor mode
-    remove() {
-        if (!this.isActive) return;
-
-        this.isActive = false;
-
-        // Remove input listeners
-        window.removeEventListener('keydown', this.onKeyDown);
-        window.removeEventListener('keyup', this.onKeyUp);
-
-        // Clean up ragdoll state
-        if (this.isRagdolling) {
-            this.detachedBodyParts.forEach(part => {
-                this.scene.remove(part.mesh);
-            });
-            this.detachedBodyParts = [];
-
-            this.detachedSkis.forEach(ski => {
-                this.scene.remove(ski.mesh);
-            });
-            this.detachedSkis = [];
-
-            if (this.headSnowball) {
-                this.scene.remove(this.headSnowball.mesh);
-                this.headSnowball = null;
-            }
-
-            this.isRagdolling = false;
-        }
-
-        // Remove from scene
-        if (this.mesh) {
-            this.scene.remove(this.mesh);
-        }
-
-        // Remove snow spray
-        if (this.snowSprayParticles) {
-            this.scene.remove(this.snowSprayParticles);
-            this.snowSprayParticles = null;
-        }
-
-        // Stop audio
-        this.stopAudio();
-
-        // Restore camera
-        if (this.savedCameraPosition && this.savedCameraTarget) {
-            this.camera.position.copy(this.savedCameraPosition);
-            this.cameraControls.controls.target.copy(this.savedCameraTarget);
-        }
-
-        // Re-enable orbit controls
-        this.cameraControls.setEnabled(true);
-
-        // Hide HUD, show palette
-        document.getElementById('skier-hud').classList.add('hidden');
-        document.getElementById('object-palette').style.display = '';
-        document.getElementById('quick-actions').style.display = '';
-        document.getElementById('controls-hint').style.display = '';
-    }
-
-    onKeyDown(e) {
-        let handled = true;
-        switch (e.code) {
-            case 'KeyW':
-            case 'ArrowUp':
-                this.input.forward = true;
-                this.input.tuck = true; // Tuck for less drag / higher speed
-                // Initiate frontflip if airborne (W = rotate forward, head goes down first)
-                if (!this.isGrounded && !this.isFlipping && this.verticalVelocity > 0) {
-                    this.startFlip(1);
-                }
-                break;
-            case 'KeyS':
-            case 'ArrowDown':
-                this.input.backward = true;
-                // Initiate backflip if airborne (S = rotate backward, head goes back first)
-                if (!this.isGrounded && !this.isFlipping && this.verticalVelocity > 0) {
-                    this.startFlip(-1); // Backflip - negative rotation = backward tumble
-                }
-                break;
-            case 'KeyA':
-            case 'ArrowLeft':
-                this.input.left = true;
-                break;
-            case 'KeyD':
-            case 'ArrowRight':
-                this.input.right = true;
-                break;
-            case 'Space':
-                if (this.isRagdolling) {
-                    // Recover immediately from ragdoll
-                    this.recoverFromRagdoll();
-                } else if (this.isGrounded && !this.isJumping) {
-                    this.input.jump = true;
-                }
-                break;
-            case 'Escape':
-                this.remove();
-                break;
-            case 'KeyR':
-                this.resetToStart();
-                break;
-            default:
-                handled = false;
-        }
-        if (handled) {
-            e.preventDefault();
-        }
-    }
-
-    resetToStart() {
-        // Clean up ragdoll state if active
-        if (this.isRagdolling) {
-            // Remove body parts
-            this.detachedBodyParts.forEach(part => {
-                this.scene.remove(part.mesh);
-            });
-            this.detachedBodyParts = [];
-
-            // Remove skis
-            this.detachedSkis.forEach(ski => {
-                this.scene.remove(ski.mesh);
-            });
-            this.detachedSkis = [];
-
-            // Remove head snowball
-            if (this.headSnowball) {
-                this.scene.remove(this.headSnowball.mesh);
-                this.headSnowball = null;
-            }
-
-            this.isRagdolling = false;
-        }
-
-        // Show skis again
-        this.skiMeshes.forEach(ski => {
-            ski.visible = true;
-        });
-
-        // Show mesh again
-        this.mesh.visible = true;
-
-        // Reset to starting position
-        const y = this.mountain.getHeightAt(this.startPosition.x, this.startPosition.z);
-        this.position.set(this.startPosition.x, y, this.startPosition.z);
-        this.rotation = this.startRotation;
+    _resetMotion() {
         this.velocity.set(0, 0, 0);
         this.verticalVelocity = 0;
         this.currentSpeed = 0;
@@ -792,213 +991,142 @@ export class Skier {
         this.spinVelocity = 0;
         this.isSpinning = false;
         this.totalSpinDegrees = 0;
+        this.lastTerrainSlope = 0;
+        this.isTucking = false;
+        this.isBraking = false;
+        this.currentTrick = { spinDegrees: 0, hasFlip: false, flipDirection: 0, numFlips: 0, startTime: 0 };
+        this.stats.currentAirTime = 0;
+        this._pendingLand = null;
+        for (const k in this.input) this.input[k] = false;
+    }
+
+    _clearRagdoll() {
+        this.detachedBodyParts.forEach((p) => this.scene.remove(p.mesh));
+        this.detachedBodyParts = [];
+        this.detachedSkis.forEach((s) => this.scene.remove(s.mesh));
+        this.detachedSkis = [];
+        if (this.headSnowball) {
+            this.scene.remove(this.headSnowball.mesh);
+            this.headSnowball = null;
+        }
+        this.isRagdolling = false;
+    }
+
+    remove(opts = {}) {
+        if (!this.isActive) return;
+        this.isActive = false;
+
+        window.removeEventListener('keydown', this.onKeyDown);
+        window.removeEventListener('keyup', this.onKeyUp);
+
+        this._clearRagdoll();
+        this._finishFallingTrees();
+
+        if (this.mesh) this.scene.remove(this.mesh);
+        if (this._spray) this.scene.remove(this._spray.points);
+        if (this._contact) this.scene.remove(this._contact);
+        if (this._trails) this._trails.ribbons.forEach((r) => this.scene.remove(r.mesh));
+
+        const runSeconds = (performance.now() - this.stats.runStartTime) / 1000;
+        events.emit('ski:end', {
+            score: this.score,
+            stats: {
+                maxSpeedMph: Math.round(this.stats.maxSpeed * MPH),
+                totalAirTime: this.stats.totalAirTime,
+                tricksLanded: this.stats.tricksLanded,
+                tricksFailed: this.stats.tricksFailed,
+                bestCombo: this.stats.bestCombo,
+                runSeconds,
+            },
+        });
+
+        // Restore the editor camera with an eased flight (FOV eases back too).
+        this.cameraControls.setEnabled(true);
+        if (this.savedCameraPosition && this.savedCameraTarget) {
+            if (!opts.instant && typeof this.cameraControls.flyTo === 'function') {
+                this.cameraControls.flyTo(this.savedCameraPosition, this.savedCameraTarget, 1.4, { fov: this._savedFov });
+            } else {
+                this.camera.position.copy(this.savedCameraPosition);
+                this.cameraControls.controls.target.copy(this.savedCameraTarget);
+                this.camera.fov = this._savedFov;
+                this.camera.updateProjectionMatrix();
+            }
+        } else {
+            this.camera.fov = this._savedFov;
+            this.camera.updateProjectionMatrix();
+        }
+        this.timeScale = 1;
+    }
+
+    resetToStart() {
+        this._clearRagdoll();
+        if (!this.mesh) return;
+        this.skiMeshes.forEach((s) => { s.visible = true; });
+        this.mesh.visible = true;
+
+        const y = this.mountain.getHeightAt(this.startPosition.x, this.startPosition.z);
+        this.position.set(this.startPosition.x, y, this.startPosition.z);
+        this.rotation = this.startRotation;
+        this._resetMotion();
         this.headSnowballSize = 1;
         this.mesh.position.copy(this.position);
         this.mesh.rotation.set(0, this.rotation, 0);
+        this._baseQuatValid = false;
         this.resetBodyParts();
+        this._clearTrails();
+        this._camAnchorY = this.position.y;
+        events.emit('ski:reset', {});
     }
 
-    startFlip(direction) {
-        this.isFlipping = true;
-        this.flipDirection = direction;
-        this.flipRotation = 0;
-        // Flip speed based on jump height/speed
-        this.flipVelocity = direction * (8 + Math.min(this.currentSpeed * 0.3, 4));
-        this.trickLanded = false;
-    }
-
-    updateFlip(delta) {
-        if (!this.isFlipping) return;
-
-        // Apply flip rotation
-        this.flipRotation += this.flipVelocity * delta;
-
-        // Check if flip is complete (full 360 degrees = 2*PI)
-        const fullFlip = Math.abs(this.flipRotation) >= Math.PI * 2;
-
-        // If we've done a full flip, allow landing
-        if (fullFlip && !this.trickLanded) {
-            this.trickLanded = true;
-        }
-
-        // Landing detection - if grounded while flipping
-        if (this.isGrounded) {
-            // Check if landed cleanly (close to upright)
-            const normalizedRotation = this.flipRotation % (Math.PI * 2);
-            const landingAngle = Math.abs(normalizedRotation);
-
-            // Clean landing if within ~50 degrees of full rotation or zero (more forgiving)
-            const tolerance = 0.9; // ~52 degrees tolerance
-            const cleanLanding = landingAngle < tolerance || landingAngle > Math.PI * 2 - tolerance ||
-                                 (landingAngle > Math.PI - tolerance && landingAngle < Math.PI + tolerance);
-
-            // Track flip for scoring
-            const numFlips = Math.floor(Math.abs(this.flipRotation) / (Math.PI * 2));
-            if (numFlips > 0) {
-                this.currentTrick.hasFlip = true;
-                this.currentTrick.flipDirection = this.flipDirection;
-                this.currentTrick.numFlips = numFlips;
+    // =====================================================================
+    // INPUT
+    // =====================================================================
+    onKeyDown(e) {
+        if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
+        let handled = true;
+        switch (e.code) {
+            case 'KeyW':
+            case 'ArrowUp':
+            {
+                // Flips need a fresh press after takeoff: held keys / OS auto-repeat
+                // while tucking over a roller must never start one.
+                const fresh = !e.repeat && !this.input.forward;
+                this.input.forward = true;
+                this.input.tuck = true;
+                if (fresh && !this.isGrounded && !this.isFlipping && this.verticalVelocity > 0) this.startFlip(1);
+                break;
             }
-
-            if (!cleanLanding && Math.abs(this.flipRotation) > Math.PI * 0.5) {
-                // Crash! Trigger ragdoll
-                this.awardTrickPoints(false); // Failed landing
-                this.startRagdoll();
-                return;
-            } else if (cleanLanding && numFlips > 0 && !this.isSpinning) {
-                // Clean flip landing (no spin involved) - award points
-                this.awardTrickPoints(true);
+            case 'KeyS':
+            case 'ArrowDown':
+            {
+                const fresh = !e.repeat && !this.input.backward;
+                if (fresh && this.isGrounded && Math.abs(this.currentSpeed) > 12) this._brakeBurst = true;
+                this.input.backward = true;
+                if (fresh && !this.isGrounded && !this.isFlipping && this.verticalVelocity > 0) this.startFlip(-1);
+                break;
             }
-
-            // Reset flip state
-            this.isFlipping = false;
-            this.flipRotation = 0;
-            this.flipVelocity = 0;
+            case 'KeyA':
+            case 'ArrowLeft':
+                this.input.left = true;
+                break;
+            case 'KeyD':
+            case 'ArrowRight':
+                this.input.right = true;
+                break;
+            case 'Space':
+                if (this.isRagdolling) this.recoverFromRagdoll();
+                else if (this.isGrounded && !this.isJumping) this.input.jump = true;
+                break;
+            case 'Escape':
+                this.remove();
+                break;
+            case 'KeyR':
+                this.resetToStart();
+                break;
+            default:
+                handled = false;
         }
-    }
-
-    updateSpin(delta) {
-        // Handle spin landing when touching ground
-        if (this.isSpinning && this.isGrounded) {
-            // Check for clean spin landing (180, 360, 540, etc.)
-            const spinDegrees = Math.abs(this.spinRotation) * (180 / Math.PI);
-            const nearestHalf = Math.round(spinDegrees / 180) * 180;
-            const landingError = Math.abs(spinDegrees - nearestHalf);
-
-            // Clean landing if within 50 degrees of a 180 increment (more forgiving)
-            const cleanLanding = landingError < 50;
-
-            // Track spin for scoring (180 degree increments)
-            if (spinDegrees >= 180) {
-                this.currentTrick.spinDegrees = nearestHalf;
-            }
-
-            if (!cleanLanding && spinDegrees > 90) {
-                // Crash on bad spin landing - trigger ragdoll
-                this.awardTrickPoints(false); // Failed landing
-                this.startRagdoll();
-                return;
-            } else if (spinDegrees >= 180) {
-                this.awardTrickPoints(true); // Clean landing - only award for 180+
-            }
-
-            // Preserve velocity direction through spin landing
-            const preSpinVelX = this.velocity.x;
-            const preSpinVelZ = this.velocity.z;
-
-            // Apply the spin to actual rotation (land facing new direction)
-            this.rotation += this.spinRotation;
-
-            // Recompute currentSpeed as signed projection of preserved velocity onto new facing
-            const newForward = new THREE.Vector3(Math.sin(this.rotation), 0, Math.cos(this.rotation));
-            this.currentSpeed = preSpinVelX * newForward.x + preSpinVelZ * newForward.z;
-            // Velocity stays in the original movement direction
-            this.velocity.x = preSpinVelX;
-            this.velocity.z = preSpinVelZ;
-
-            // Reset spin state
-            this.isSpinning = false;
-            this.spinRotation = 0;
-            this.spinVelocity = 0;
-            this.totalSpinDegrees = 0;
-        }
-    }
-
-    // Calculate and award points for trick
-    awardTrickPoints(cleanLanding) {
-        let points = 0;
-        let trickName = '';
-
-        // Spin points: 180=100, 360=250, 540=500, 720=800, etc.
-        const spinDegrees = this.currentTrick.spinDegrees || 0;
-        if (spinDegrees >= 180) {
-            const spinPoints = {
-                180: 100,
-                360: 250,
-                540: 500,
-                720: 800,
-                900: 1200,
-                1080: 1800
-            };
-            points += spinPoints[spinDegrees] || spinDegrees * 2;
-            trickName = `${spinDegrees}°`;
-            this.stats.totalSpins++;
-        }
-
-        // Flip points: single=300, double=700, triple=1200
-        if (this.currentTrick.hasFlip) {
-            const numFlips = this.currentTrick.numFlips || 1;
-            const flipPoints = [0, 300, 700, 1200, 2000];
-            points += flipPoints[Math.min(numFlips, 4)];
-            const flipName = this.currentTrick.flipDirection > 0 ? 'Frontflip' : 'Backflip';
-            trickName = trickName ? `${trickName} ${flipName}` : flipName;
-            if (numFlips > 1) trickName = `${numFlips}x ${trickName}`;
-            this.stats.totalFlips++;
-        }
-
-        if (points > 0) {
-            if (cleanLanding) {
-                // Apply combo multiplier
-                const now = performance.now();
-                if (now - this.lastTrickTime < 3000) {
-                    this.comboMultiplier = Math.min(this.comboMultiplier + 0.5, 4);
-                } else {
-                    this.comboMultiplier = 1;
-                }
-                this.lastTrickTime = now;
-
-                // Style bonus for clean landing
-                points = Math.round(points * 1.2 * this.comboMultiplier);
-                this.score += points;
-                this.stats.tricksLanded++;
-                this.stats.bestCombo = Math.max(this.stats.bestCombo, this.comboMultiplier);
-
-                // Play awesome landing sound!
-                this.playLandingSound(points);
-
-                // Show points popup
-                this.showPointsPopup(`${trickName}! +${points}`, true);
-            } else {
-                // Failed landing - no points, reset combo
-                this.comboMultiplier = 1;
-                this.stats.tricksFailed++;
-                this.playCrashSound();
-                this.showPointsPopup(`${trickName} - CRASH!`, false);
-            }
-        }
-
-        // Reset current trick
-        this.currentTrick = {
-            spinDegrees: 0,
-            hasFlip: false,
-            flipDirection: 0,
-            numFlips: 0,
-            startTime: 0
-        };
-    }
-
-    // Show floating points notification
-    showPointsPopup(text, success) {
-        const popup = document.createElement('div');
-        popup.className = 'points-popup ' + (success ? 'success' : 'fail');
-        popup.textContent = text;
-        popup.style.cssText = `
-            position: fixed;
-            top: 35%;
-            left: 50%;
-            transform: translateX(-50%);
-            font-family: 'Quicksand', sans-serif;
-            font-size: ${success ? '1.5rem' : '1.2rem'};
-            font-weight: 600;
-            color: ${success ? '#4ade80' : '#f87171'};
-            text-shadow: 0 2px 4px rgba(0,0,0,0.5);
-            pointer-events: none;
-            z-index: 1000;
-            animation: pointsFloat 1.5s ease-out forwards;
-        `;
-        document.body.appendChild(popup);
-
-        setTimeout(() => popup.remove(), 1500);
+        if (handled) e.preventDefault();
     }
 
     onKeyUp(e) {
@@ -1027,1629 +1155,1255 @@ export class Skier {
             default:
                 handled = false;
         }
-        if (handled) {
-            e.preventDefault();
+        if (handled) e.preventDefault();
+    }
+
+    // =====================================================================
+    // TRICKS
+    // =====================================================================
+    startFlip(direction) {
+        this.isFlipping = true;
+        this.flipDirection = direction;
+        this.flipRotation = 0;
+        this.flipVelocity = direction * (8 + Math.min(this.currentSpeed * 0.3, 4));
+        this.trickLanded = false;
+    }
+
+    updateFlip(delta) {
+        if (!this.isFlipping) return;
+        this.flipRotation += this.flipVelocity * delta;
+
+        if (Math.abs(this.flipRotation) >= TAU && !this.trickLanded) this.trickLanded = true;
+
+        if (this.isGrounded) {
+            const normalizedRotation = this.flipRotation % TAU;
+            const landingAngle = Math.abs(normalizedRotation);
+            const tolerance = 0.9;
+            const cleanLanding = landingAngle < tolerance || landingAngle > TAU - tolerance ||
+                (landingAngle > Math.PI - tolerance && landingAngle < Math.PI + tolerance);
+
+            const numFlips = Math.floor(Math.abs(this.flipRotation) / TAU);
+            if (numFlips > 0) {
+                this.currentTrick.hasFlip = true;
+                this.currentTrick.flipDirection = this.flipDirection;
+                this.currentTrick.numFlips = numFlips;
+            }
+
+            if (!cleanLanding && Math.abs(this.flipRotation) > Math.PI * 0.5) {
+                this.awardTrickPoints(false);
+                this.startRagdoll();
+                return;
+            } else if (cleanLanding && numFlips > 0 && !this.isSpinning) {
+                this.awardTrickPoints(true);
+            }
+
+            this.isFlipping = false;
+            this.flipRotation = 0;
+            this.flipVelocity = 0;
+        }
+    }
+
+    updateSpin(delta) {
+        if (this.isSpinning && this.isGrounded) {
+            const spinDegrees = Math.abs(this.spinRotation) / DEG;
+            const nearestHalf = Math.round(spinDegrees / 180) * 180;
+            const landingError = Math.abs(spinDegrees - nearestHalf);
+            const cleanLanding = landingError < 50;
+
+            if (spinDegrees >= 180) this.currentTrick.spinDegrees = nearestHalf;
+
+            if (!cleanLanding && spinDegrees > 90) {
+                this.awardTrickPoints(false);
+                this.startRagdoll();
+                return;
+            } else if (spinDegrees >= 180) {
+                this.awardTrickPoints(true);
+            }
+
+            const preSpinVelX = this.velocity.x;
+            const preSpinVelZ = this.velocity.z;
+            this.rotation += this.spinRotation;
+            this.currentSpeed = preSpinVelX * Math.sin(this.rotation) + preSpinVelZ * Math.cos(this.rotation);
+            this.velocity.x = preSpinVelX;
+            this.velocity.z = preSpinVelZ;
+
+            this.isSpinning = false;
+            this.spinRotation = 0;
+            this.spinVelocity = 0;
+            this.totalSpinDegrees = 0;
+            this._baseQuatValid = false;
+        }
+    }
+
+    awardTrickPoints(cleanLanding) {
+        let points = 0;
+        const spinDegrees = this.currentTrick.spinDegrees || 0;
+        if (spinDegrees >= 180) {
+            points += SPIN_POINTS[spinDegrees] || spinDegrees * 2;
+            this.stats.totalSpins++;
+        }
+        const numFlips = this.currentTrick.hasFlip ? (this.currentTrick.numFlips || 1) : 0;
+        if (numFlips) {
+            points += FLIP_POINTS[Math.min(numFlips, 4)];
+            this.stats.totalFlips++;
+        }
+        const trickName = nameTrick(spinDegrees, numFlips, this.currentTrick.flipDirection);
+
+        if (points > 0) {
+            if (cleanLanding) {
+                const now = performance.now();
+                if (now - this.lastTrickTime < 3000) {
+                    this.comboMultiplier = Math.min(this.comboMultiplier + 0.5, 4);
+                } else {
+                    this.comboMultiplier = 1;
+                }
+                this.lastTrickTime = now;
+
+                points = Math.round(points * 1.2 * this.comboMultiplier);
+                this.score += points;
+                this.stats.tricksLanded++;
+                this.stats.bestCombo = Math.max(this.stats.bestCombo, this.comboMultiplier);
+
+                events.emit('ski:trick', {
+                    name: trickName,
+                    points,
+                    combo: this.comboMultiplier,
+                    spinDegrees,
+                    flips: numFlips,
+                    flipDirection: this.currentTrick.flipDirection || 0,
+                });
+                if (points >= 1000) this._slowmo = 0.42; // brief bullet-time on big landings
+                this._addTrauma(0.15);
+            } else {
+                this.comboMultiplier = 1;
+                this.stats.tricksFailed++;
+                this._pendingCrashName = trickName;
+            }
+        }
+
+        this.currentTrick = { spinDegrees: 0, hasFlip: false, flipDirection: 0, numFlips: 0, startTime: 0 };
+    }
+
+    // =====================================================================
+    // UPDATE
+    // =====================================================================
+    _sampleNormal(x, z, out) {
+        const e = 2.0;
+        const h = this.mountain.getHeightAt(x, z);
+        const hx = this.mountain.getHeightAt(x + e, z);
+        const hz = this.mountain.getHeightAt(x, z + e);
+        return out.set(h - hx, e, h - hz).normalize();
+    }
+
+    _updateTimeScale(rawDelta) {
+        if (this._slowmo > 0) {
+            this._slowmo -= rawDelta;
+            // ease 1 -> 0.6 -> 1 over the window
+            const t = clamp01(this._slowmo / 0.42);
+            const w = Math.sin(t * Math.PI);
+            this.timeScale = 1 - 0.4 * Math.min(1, w * 1.6);
+        } else {
+            this.timeScale = damp(this.timeScale, 1, 10, rawDelta);
         }
     }
 
     update(delta) {
         if (!this.isActive || !this.mesh) return;
 
-        // Clamp delta to prevent physics explosions
-        delta = Math.min(delta, 0.05);
+        const rawDelta = Math.min(delta, 0.05);
+        this._updateTimeScale(rawDelta);
+        delta = rawDelta * this.timeScale;
+        this._time += delta;
 
-        // Handle ragdoll state separately
+        this._updateFallingTrees(delta);
+
         if (this.isRagdolling) {
             this.updateRagdoll(delta);
-            this.updateCamera(delta);
+            this.updateCamera(rawDelta);
             this.updateSnowSpray(delta);
-            this.updateHUD();
+            this.updateTrails(delta);
+            this._emitTick();
             return;
         }
 
-        // TRACK STATISTICS
-        // Max speed
-        if (Math.abs(this.currentSpeed) > this.stats.maxSpeed) {
-            this.stats.maxSpeed = Math.abs(this.currentSpeed);
-        }
-
-        // Air time tracking
+        // Stats
+        const absSpeed = Math.abs(this.currentSpeed);
+        if (absSpeed > this.stats.maxSpeed) this.stats.maxSpeed = absSpeed;
         if (!this.isGrounded) {
             this.stats.currentAirTime += delta;
         } else if (this.stats.currentAirTime > 0) {
-            // Just landed - add to total and reset
             this.stats.totalAirTime += this.stats.currentAirTime;
             this.stats.currentAirTime = 0;
-            // Increment air hint counter (limit how many times hint shows)
             this.airHintCount++;
         }
 
-        // Get terrain data at current position
         const terrainHeight = this.mountain.getHeightAt(this.position.x, this.position.z);
-        const terrainNormal = this.mountain.getNormalAt(this.position.x, this.position.z);
-        const slope = this.mountain.getSlopeAt(this.position.x, this.position.z);
-
-        // Calculate slope steepness from terrain normal
-        // On flat ground normal = (0,1,0), on slopes the x,z components indicate tilt
+        const terrainNormal = this._sampleNormal(this.position.x, this.position.z, _v1);
         const slopeSteepness = Math.sqrt(terrainNormal.x * terrainNormal.x + terrainNormal.z * terrainNormal.z);
 
-        // Calculate slope direction (direction of steepest DESCENT - downhill)
-        const slopeDir = new THREE.Vector3(terrainNormal.x, 0, terrainNormal.z);
-        if (slopeDir.lengthSq() > 0.0001) {
-            slopeDir.normalize();
-        }
+        const slopeDir = _v2.set(terrainNormal.x, 0, terrainNormal.z);
+        if (slopeDir.lengthSq() > 0.0001) slopeDir.normalize();
 
-        // Forward direction based on skier rotation
-        const forward = new THREE.Vector3(
-            Math.sin(this.rotation),
-            0,
-            Math.cos(this.rotation)
-        );
+        const fwdX = Math.sin(this.rotation);
+        const fwdZ = Math.cos(this.rotation);
 
-        // ============================================
-        // SIMPLIFIED SKI PHYSICS - Fast and Fun
-        // ============================================
-
-        // TURNING: Progressive carving — two-stage smoothing for fluid arcs
-        // Invert controls when switch so left/right stay camera-relative
+        // Turning: two-stage smoothing; controls stay camera-relative when switch
         const isSwitch = this.currentSpeed < -0.5;
         const rawEdge = this.input.left ? 1.0 : (this.input.right ? -1.0 : 0);
         const targetEdge = isSwitch ? -rawEdge : rawEdge;
-        // Stage 1: Edge angle builds up gradually (like progressively tipping skis on edge)
-        const edgeLerp = targetEdge !== 0 ? 0.04 : 0.06; // Engage slow, release slightly faster
-        this.edgeAngle = THREE.MathUtils.lerp(this.edgeAngle, targetEdge, edgeLerp);
+        const edgeLerp = targetEdge !== 0 ? 0.04 : 0.06;
+        this.edgeAngle = THREE.MathUtils.lerp(this.edgeAngle, targetEdge, lerpFactor(edgeLerp, delta));
 
-        // Apply turning - only when grounded (airborne turning is handled separately for spins)
         if (Math.abs(this.edgeAngle) > 0.01 && this.isGrounded) {
             const speedMult = 0.5 + Math.min(this.currentSpeed / 30, 1.5);
             const targetTurnRate = this.edgeAngle * this.turnSpeed * speedMult;
-            // Stage 2: Turn momentum smooths the actual rotation rate (like carving an arc)
-            this.turnMomentum = THREE.MathUtils.lerp(this.turnMomentum, targetTurnRate, 0.06);
+            this.turnMomentum = THREE.MathUtils.lerp(this.turnMomentum, targetTurnRate, lerpFactor(0.06, delta));
             this.rotation += this.turnMomentum * delta;
         } else {
-            // Decay momentum when airborne or no input
-            this.turnMomentum *= 0.92;
+            this.turnMomentum *= frameMul(0.92, delta);
         }
 
         if (this.isGrounded) {
-            // REALISTIC GRAVITY-DRIVEN PHYSICS
-            // The skier accelerates purely from gravity on slopes - no forward key needed
-            const downhillAlignment = forward.dot(slopeDir);
-
-            // Gravity acceleration = gravity * steepness * alignment with fall line
+            const downhillAlignment = fwdX * slopeDir.x + fwdZ * slopeDir.z;
             const gravityAccel = this.gravity * slopeSteepness * downhillAlignment;
 
-            // Auto-align toward fall line when slow (only when not switch)
             if (Math.abs(this.currentSpeed) < 5 && this.currentSpeed >= 0 && slopeSteepness > 0.02 && slopeDir.lengthSq() > 0.0001) {
                 const fallLineAngle = Math.atan2(slopeDir.x, slopeDir.z);
-                const angleDiff = fallLineAngle - this.rotation;
-                const normalizedDiff = Math.atan2(Math.sin(angleDiff), Math.cos(angleDiff));
-                this.rotation += normalizedDiff * 0.5 * delta;
+                const diff = Math.atan2(Math.sin(fallLineAngle - this.rotation), Math.cos(fallLineAngle - this.rotation));
+                this.rotation += diff * 0.5 * delta;
             }
 
-            // Always add base acceleration on any slope to prevent getting stuck
             const minAccel = slopeSteepness * 12;
             const effectiveAccel = Math.abs(this.currentSpeed) < 5 ? Math.max(gravityAccel, minAccel) : gravityAccel;
-
             this.currentSpeed += effectiveAccel * delta;
 
-            // Uphill deceleration - naturally slow down going uphill
             if (downhillAlignment < -0.1) {
                 this.currentSpeed += this.gravity * slopeSteepness * downhillAlignment * delta * 0.5;
             }
 
-            // TUCKING: W/Up key reduces drag significantly for higher terminal speed
             this.isTucking = this.input.tuck && Math.abs(this.edgeAngle) < 0.3;
 
-            // FRICTION: Realistic snow friction + edge friction when carving
             const baseFriction = this.isTucking ? 0.0005 : 0.002;
             const turnFriction = Math.abs(this.edgeAngle) * 0.02;
-            // Speed-dependent air drag (increases with speed squared, approximated)
-            const airDrag = this.isTucking ? 0.00001 : 0.00003;
-            const speedDrag = this.currentSpeed * airDrag;
-            this.currentSpeed *= (1 - baseFriction - turnFriction - speedDrag);
+            // Quadratic drag sets a terminal speed (~47 u/s tucked, ~38 carving on
+            // a steep pitch) so runs stay readable instead of rocketing past 100 mph.
+            const airDrag = this.isTucking ? 0.00007 : 0.00012;
+            const speedDrag = Math.abs(this.currentSpeed) * airDrag;
+            this.currentSpeed *= frameMul(1 - baseFriction - turnFriction - speedDrag, delta);
 
-            // BRAKING (S/Down key - snowplow)
-            if (this.input.backward && !this.isTucking) {
-                this.currentSpeed *= this.brakeForce;
-            }
+            this.isBraking = this.input.backward && !this.isTucking;
+            if (this.isBraking) this.currentSpeed *= frameMul(this.brakeForce, delta);
 
-            // Speed limits - tucking allows higher terminal velocity
-            // Negative speed = switch skiing (moving backward relative to facing)
             const effectiveMaxSpeed = this.isTucking ? this.maxSpeed * 1.3 : this.maxSpeed;
-            this.currentSpeed = Math.max(-effectiveMaxSpeed, Math.min(this.currentSpeed, effectiveMaxSpeed));
+            this.currentSpeed = THREE.MathUtils.clamp(this.currentSpeed, -effectiveMaxSpeed, effectiveMaxSpeed);
 
-            // Convert speed + direction to velocity
-            this.velocity.x = forward.x * this.currentSpeed;
-            this.velocity.z = forward.z * this.currentSpeed;
+            this.velocity.x = fwdX * this.currentSpeed;
+            this.velocity.z = fwdZ * this.currentSpeed;
 
-            // JUMP - manual jump adds to any natural launch for extra height
             if (this.input.jump) {
-                // Check if we're about to naturally launch (for timed jump bonus)
-                const nextX = this.position.x + this.velocity.x * delta;
-                const nextZ = this.position.z + this.velocity.z * delta;
-                const nextTerrainHeight = this.mountain.getHeightAt(nextX, nextZ);
-                const upcomingDrop = terrainHeight - nextTerrainHeight;
-
-                // Timed jump bonus - if jumping right before a drop, small extra pop
+                const nextH = this.mountain.getHeightAt(this.position.x + this.velocity.x * delta, this.position.z + this.velocity.z * delta);
+                const upcomingDrop = terrainHeight - nextH;
                 let jumpBoost = this.jumpForce;
-                if (upcomingDrop > 0.2 && this.currentSpeed > 10) {
-                    // Perfect timing! Small speed-based bonus
-                    jumpBoost += this.currentSpeed * 0.02;
-                }
-
-                // Cap manual jump velocity
+                if (upcomingDrop > 0.2 && this.currentSpeed > 10) jumpBoost += this.currentSpeed * 0.02;
                 this.verticalVelocity = Math.min(jumpBoost, 3.5);
                 this.isGrounded = false;
                 this.isJumping = true;
                 this.input.jump = false;
+                events.emit('ski:jump', { source: 'manual', power: this.verticalVelocity, speed: Math.abs(this.currentSpeed) });
             }
         } else {
-            // AIR PHYSICS - realistic gravity when airborne
+            this.isBraking = false;
             this.verticalVelocity -= this.airGravity * delta;
-
-            // Maintain horizontal velocity in air (minimal drag)
-            this.velocity.x *= (1 - this.airFriction);
-            this.velocity.z *= (1 - this.airFriction);
-
-            // Update currentSpeed from velocity
+            const af = frameMul(1 - this.airFriction, delta);
+            this.velocity.x *= af;
+            this.velocity.z *= af;
             this.currentSpeed = Math.sqrt(this.velocity.x * this.velocity.x + this.velocity.z * this.velocity.z);
 
-            // SPIN TRICKS - A/D to spin while airborne
             const HORIZONTAL_SPIN_MULTIPLIER = 2.0;
             if (Math.abs(this.edgeAngle) > 0.3) {
-                // Start or continue spinning
                 if (!this.isSpinning) {
                     this.isSpinning = true;
                     this.spinRotation = 0;
                     this.totalSpinDegrees = 0;
                 }
-                // Add spin velocity based on input (scaled for faster response)
                 this.spinVelocity += this.edgeAngle * 15 * HORIZONTAL_SPIN_MULTIPLIER * delta;
-                // Cap spin speed (higher cap for snappier spins)
                 this.spinVelocity = THREE.MathUtils.clamp(this.spinVelocity, -20, 20);
             }
-
-            // Apply spin rotation
             if (this.isSpinning) {
                 this.spinRotation += this.spinVelocity * delta;
-                this.totalSpinDegrees = Math.abs(this.spinRotation) * (180 / Math.PI);
-
-                // Slight air resistance on spin
-                this.spinVelocity *= 0.98;
+                this.totalSpinDegrees = Math.abs(this.spinRotation) / DEG;
+                this.spinVelocity *= frameMul(0.98, delta);
             }
-
-            // Also allow slight trajectory adjustment
             if (Math.abs(this.edgeAngle) > 0.1 && !this.isSpinning) {
                 this.rotation += this.edgeAngle * 0.5 * delta;
             }
         }
 
-        // Apply horizontal velocity
         this.position.x += this.velocity.x * delta;
         this.position.z += this.velocity.z * delta;
 
-        // Get terrain height at new position
         const newTerrainHeight = this.mountain.getHeightAt(this.position.x, this.position.z);
 
-        // Handle vertical movement
         if (this.isGrounded && !this.isJumping) {
-            // Calculate current slope in direction of travel
-            // Positive = going uphill, Negative = going downhill
             const lookAheadDist = 3.0;
-            const aheadX = this.position.x + forward.x * lookAheadDist;
-            const aheadZ = this.position.z + forward.z * lookAheadDist;
-            const aheadHeight = this.mountain.getHeightAt(aheadX, aheadZ);
+            const aheadHeight = this.mountain.getHeightAt(this.position.x + fwdX * lookAheadDist, this.position.z + fwdZ * lookAheadDist);
             const currentSlope = (aheadHeight - terrainHeight) / lookAheadDist;
-
-            // Detect inflection point - slope changing from "less steep" to "more steep" downward
-            // This is the lip of a jump where terrain curves away
             const slopeChange = currentSlope - this.lastTerrainSlope;
             const now = performance.now();
 
-            // Natural launch conditions:
-            // 1. Slope is getting MORE negative (terrain curving away/down)
-            // 2. Going fast enough
-            // 3. Significant slope change (inflection point)
-            // 4. Not just triggered a launch
-            const minLaunchSpeed = 12;
-            const inflectionThreshold = -0.15; // Slope must change this much toward steeper downhill
-            const timeSinceLastLaunch = now - this.lastSlopeChangeTime;
-
-            if (slopeChange < inflectionThreshold &&
-                this.currentSpeed > minLaunchSpeed &&
-                timeSinceLastLaunch > 500) {
-
-                // Calculate launch velocity based on speed and how sharp the inflection is
-                const speedFactor = this.currentSpeed / this.maxSpeed;
+            if (slopeChange < -0.15 && this.currentSpeed > 12 && now - this.lastSlopeChangeTime > 500) {
                 const inflectionStrength = Math.min(Math.abs(slopeChange) * 3, 1.5);
-
-                // Natural launch - converts forward momentum to vertical at inflection
-                this.verticalVelocity = this.currentSpeed * 0.08 * inflectionStrength + 1;
-
-                // Cap natural launch velocity
-                this.verticalVelocity = Math.min(this.verticalVelocity, 5);
-
+                this.verticalVelocity = Math.min(this.currentSpeed * 0.08 * inflectionStrength + 1, 5);
                 this.isGrounded = false;
                 this.isJumping = true;
                 this.lastSlopeChangeTime = now;
-
-                // Keep current height momentarily
                 this.position.y = terrainHeight;
+                events.emit('ski:jump', { source: 'natural', power: this.verticalVelocity, speed: this.currentSpeed });
             } else {
-                // Normal grounded movement - stick to terrain
                 this.position.y = newTerrainHeight;
                 this.verticalVelocity = 0;
             }
-
-            // Store slope for next frame
             this.lastTerrainSlope = currentSlope;
         } else {
-            // In the air - apply vertical velocity
             this.position.y += this.verticalVelocity * delta;
-
-            // Ground collision check
             if (this.position.y <= newTerrainHeight) {
+                const impactVel = -this.verticalVelocity;
                 this.position.y = newTerrainHeight;
                 this.verticalVelocity = 0;
                 this.isGrounded = true;
                 this.isJumping = false;
+                this._pendingLand = {
+                    airTime: this.stats.currentAirTime,
+                    impact: clamp01((impactVel - 3) / 30),
+                };
             }
         }
 
-        // Boundary check
         const halfWidth = this.mountain.width / 2 - 5;
         const halfDepth = this.mountain.depth / 2 - 5;
         this.position.x = THREE.MathUtils.clamp(this.position.x, -halfWidth, halfWidth);
         this.position.z = THREE.MathUtils.clamp(this.position.z, -halfDepth, halfDepth);
 
-        // Check collisions with objects
         this.checkCollisions(delta);
 
-        // Update mesh position
         this.mesh.position.copy(this.position);
 
-        // Update tricks if in air
         this.updateFlip(delta);
-        this.updateSpin(delta);
+        if (!this.isRagdolling) this.updateSpin(delta);
 
-        // Align skier to terrain surface using quaternion
-        this.alignToTerrain(terrainNormal);
+        if (this.isRagdolling) {
+            this._pendingLand = null;
+        } else {
+            if (this._pendingLand) {
+                const L = this._pendingLand;
+                this._pendingLand = null;
+                if (L.airTime > 0.06) {
+                    events.emit('ski:land', { airTime: L.airTime, impact: L.impact, speed: Math.abs(this.currentSpeed) });
+                    this.pose.squash = Math.max(this.pose.squash, 0.35 + L.impact * 0.65);
+                    this._addTrauma(0.12 + L.impact * 0.45);
+                    if (L.airTime > 0.2) this.sprayBurst(this.position.x, this.position.y, this.position.z, 10 + L.impact * 35, 0.7 + L.impact * 0.6, 0.45);
+                }
+            }
 
-        // Animate body parts based on movement
-        this.animateBody(delta);
-
-        // Update camera
-        this.updateCamera(delta);
-
-        // Emit snow spray when carving - subtle effect on any turn
-        if (this.isGrounded && Math.abs(this.edgeAngle) > 0.1 && this.currentSpeed > 2) {
-            // Calculate spray direction (perpendicular to movement, toward outside of turn)
-            const sprayDir = new THREE.Vector3(
-                -Math.cos(this.rotation) * Math.sign(this.edgeAngle),
-                0,
-                Math.sin(this.rotation) * Math.sign(this.edgeAngle)
-            );
-            // Subtle intensity - scales with edge angle and speed
-            const intensity = Math.abs(this.edgeAngle) * 0.5 * (this.currentSpeed / 25);
-            this.emitSnowSpray(this.position, sprayDir, intensity);
+            this.alignToTerrain(terrainNormal, delta);
+            this.animateBody(delta);
+            this._emitSkiSpray(delta);
         }
 
-        // Update snow spray particles
+        this.updateCamera(rawDelta);
         this.updateSnowSpray(delta);
-
-        // Update audio
-        this.updateAudio();
-
-        // Update HUD
-        this.updateHUD();
+        this.updateTrails(delta);
+        this._emitTick();
     }
 
-    // Check collisions with placed objects
-    checkCollisions(delta) {
-        // Get all placed objects in the scene
-        const collidableObjects = [];
-        this.scene.traverse(obj => {
-            if (obj.userData && obj.userData.placedObject && obj !== this.mesh) {
-                collidableObjects.push(obj);
+    _emitSkiSpray(delta) {
+        if (!this.isGrounded || !this._spray) return;
+        const speed = Math.abs(this.currentSpeed);
+        const speed01 = clamp01(speed / 60);
+        const fx = Math.sin(this.rotation), fz = Math.cos(this.rotation);
+        const lx = fz, lz = -fx;
+        const absEdge = Math.abs(this.edgeAngle);
+
+        // Carve spray from the downhill (outside) ski edge
+        if (absEdge > 0.12 && speed > 3) {
+            this._sprayAccum += delta * (absEdge * (0.25 + speed01) * 190);
+            const out = this.edgeAngle > 0 ? -1 : 1; // outside of the turn
+            while (this._sprayAccum >= 1) {
+                this._sprayAccum -= 1;
+                const ox = lx * out, oz = lz * out;
+                const along = -0.5 + Math.random() * 0.9;
+                const sp = 1.5 + speed * (0.08 + Math.random() * 0.1);
+                this._emitParticle(
+                    this.position.x + ox * 0.22 + fx * along,
+                    this.position.y + 0.06,
+                    this.position.z + oz * 0.22 + fz * along,
+                    this.velocity.x * 0.62 + ox * sp + (Math.random() - 0.5),
+                    1.2 + Math.random() * (1.5 + speed01 * 3),
+                    this.velocity.z * 0.62 + oz * sp + (Math.random() - 0.5),
+                    0.45 + Math.random() * 0.5,
+                    0.18 + Math.random() * 0.22 + speed01 * 0.25,
+                );
             }
-        });
+        } else {
+            this._sprayAccum = 0;
+        }
 
-        if (collidableObjects.length === 0) return;
+        // Snowplow: big burst on hard brake, then a steady plume
+        if (this._brakeBurst) {
+            this._brakeBurst = false;
+            for (let k = 0; k < 26; k++) {
+                const side = k % 2 ? 1 : -1;
+                const sp = 2 + Math.random() * 4 + speed * 0.06;
+                this._emitParticle(
+                    this.position.x + lx * side * 0.25 + fx * 0.6, this.position.y + 0.08, this.position.z + lz * side * 0.25 + fz * 0.6,
+                    this.velocity.x * 0.5 + (fx * 0.8 + lx * side * 0.6) * sp, 1.5 + Math.random() * 2.5,
+                    this.velocity.z * 0.5 + (fz * 0.8 + lz * side * 0.6) * sp,
+                    0.6 + Math.random() * 0.5, 0.3 + Math.random() * 0.35,
+                );
+            }
+        }
+        if (this.isBraking && speed > 4) {
+            this._brakeAccum += delta * (40 + speed01 * 160);
+            while (this._brakeAccum >= 1) {
+                this._brakeAccum -= 1;
+                const side = Math.random() < 0.5 ? 1 : -1;
+                const sp = 1 + Math.random() * 2 + speed * 0.05;
+                this._emitParticle(
+                    this.position.x + lx * side * 0.25 + fx * 0.5, this.position.y + 0.06, this.position.z + lz * side * 0.25 + fz * 0.5,
+                    this.velocity.x * 0.6 + (fx * 0.6 + lx * side * 0.8) * sp, 0.8 + Math.random() * 1.6,
+                    this.velocity.z * 0.6 + (fz * 0.6 + lz * side * 0.8) * sp,
+                    0.4 + Math.random() * 0.4, 0.2 + Math.random() * 0.25,
+                );
+            }
+        } else {
+            this._brakeAccum = 0;
+        }
+    }
 
-        // Check distance to each object
-        const skierPos = this.position.clone();
-        skierPos.y += 0.5; // Check at waist height
+    _emitTick() {
+        const t = this._tick;
+        const hv = this.isRagdolling && this.headSnowball ? this.headSnowball.velocity : null;
+        const speed = hv ? Math.sqrt(hv.x * hv.x + hv.z * hv.z) : Math.abs(this.currentSpeed);
+        t.speed = speed;
+        t.speedMph = Math.round(speed * MPH);
+        t.speed01 = clamp01(speed / 60);
+        t.maxSpeedMph = Math.round(this.stats.maxSpeed * MPH);
+        t.grounded = this.isGrounded;
+        t.tucking = this.isTucking && this.isGrounded;
+        t.braking = this.isBraking;
+        t.switch = this.currentSpeed < -0.5;
+        t.edge = this.edgeAngle;
+        t.airTime = this.stats.currentAirTime;
+        t.totalAirTime = this.stats.totalAirTime;
+        t.score = this.score;
+        t.combo = this.comboMultiplier;
+        t.tricksLanded = this.stats.tricksLanded;
+        t.ragdoll = this.isRagdolling;
 
-        // Calculate skier's forward direction and velocity
-        const forward = new THREE.Vector3(Math.sin(this.rotation), 0, Math.cos(this.rotation));
+        if (!this.isRagdolling && !this.isGrounded && (this.isFlipping || this.isSpinning)) {
+            const spinDeg = Math.round(this.totalSpinDegrees / 180) * 180;
+            const flips = this.isFlipping ? Math.floor(Math.abs(this.flipRotation) / TAU) + 1 : 0; // flip in progress
+            const key = `${spinDeg}|${flips}|${this.flipDirection}`;
+            if (key !== this._liveTrickKey) {
+                this._liveTrickKey = key;
+                this._tickTrick.label = nameTrick(spinDeg, flips, this.flipDirection) || 'Spin';
+            }
+            this._tickTrick.progress01 = this.isFlipping
+                ? (Math.abs(this.flipRotation) % TAU) / TAU
+                : (this.totalSpinDegrees % 180) / 180;
+            t.trick = this._tickTrick;
+        } else {
+            t.trick = null;
+        }
+
+        if (this.isRagdolling) {
+            t.hint = this.crashHintCount < this.maxCrashHints ? 'Space to recover' : null;
+        } else if (!this.isGrounded && !t.trick && this.airHintCount < this.maxAirHints && this.stats.currentAirTime > 0.12) {
+            t.hint = 'A/D spin · W/S flip';
+        } else {
+            t.hint = null;
+        }
+        events.emit('ski:tick', t);
+    }
+
+    // =====================================================================
+    // COLLISIONS
+    // =====================================================================
+    _collidables() {
+        const list = this.objectPlacer && this.objectPlacer.placedObjects;
+        if (list) return list;
+        // Fallback (no ObjectPlacer wired): cached scan, refreshed at most once a second.
+        const now = performance.now();
+        if (!this._fallbackCollidables || now - this._fallbackCollidablesTime > 1000) {
+            const arr = [];
+            this.scene.traverse((obj) => {
+                if (obj.userData && obj.userData.placedObject && obj !== this.mesh && !(obj.parent && obj.parent.userData && obj.parent.userData.placedObject)) {
+                    arr.push({ type: obj.name, object: obj });
+                }
+            });
+            this._fallbackCollidables = arr;
+            this._fallbackCollidablesTime = now;
+        }
+        return this._fallbackCollidables;
+    }
+
+    /** Child colliders (e.g. lift towers) for a placed root, cached until it moves. */
+    _childColliders(obj) {
+        let c = this._colliderCache.get(obj);
+        const px = obj.position.x, pz = obj.position.z, ry = obj.rotation.y, cnt = obj.children.length;
+        if (!c || c.px !== px || c.pz !== pz || c.ry !== ry || c.cnt !== cnt) {
+            const pts = [];
+            obj.updateMatrixWorld(true);
+            obj.traverse((o) => {
+                if (o !== obj && o.userData && o.userData.placedObject) {
+                    pts.push({ pos: o.getWorldPosition(new THREE.Vector3()), radius: o.userData.collisionRadius ?? this.getCollisionRadius(o) });
+                }
+            });
+            c = { px, pz, ry, cnt, pts };
+            this._colliderCache.set(obj, c);
+        }
+        return c.pts;
+    }
+
+    checkCollisions(delta) {
+        const list = this._collidables();
+        if (!list || list.length === 0) return;
+
+        const sx = this.position.x, sy = this.position.y + 0.5, sz = this.position.z;
+        const fwdX = Math.sin(this.rotation), fwdZ = Math.cos(this.rotation);
         const skierSpeed = this.currentSpeed;
 
-        for (const obj of collidableObjects) {
-            const objPos = obj.position.clone();
+        for (let i = 0; i < list.length; i++) {
+            const obj = list[i] && list[i].object;
+            if (!obj || !obj.parent || obj === this.mesh) continue;
 
-            // Check if this is a jump ramp
             if (obj.userData.isJump) {
-                // Get jump scale for collision radius
                 const jumpScale = obj.scale.x || 1;
-                const jumpRadius = 3.5 * jumpScale; // Wider detection area
-
-                // Calculate 2D distance (ignore Y for ramp detection)
-                const dx = skierPos.x - objPos.x;
-                const dz = skierPos.z - objPos.z;
-                const distance2D = Math.sqrt(dx * dx + dz * dz);
-
-                if (distance2D < jumpRadius) {
-                    // Get jump's facing direction (it faces downhill based on its Y rotation)
-                    const jumpAngle = obj.rotation.y;
-                    const jumpForward = new THREE.Vector3(Math.sin(jumpAngle), 0, Math.cos(jumpAngle));
-
-                    // Check if skier is approaching from behind the ramp (going up it)
-                    const toSkier = new THREE.Vector3(dx, 0, dz).normalize();
-                    const approachAngle = jumpForward.dot(toSkier);
-
-                    // Also check if skier is moving in roughly the same direction as the jump faces
-                    const movementAlignment = forward.dot(jumpForward);
-
+                const jumpRadius = 3.5 * jumpScale;
+                const dx = sx - obj.position.x;
+                const dz = sz - obj.position.z;
+                const d2 = Math.sqrt(dx * dx + dz * dz);
+                if (d2 < jumpRadius) {
+                    const ja = obj.rotation.y;
+                    const jfx = Math.sin(ja), jfz = Math.cos(ja);
+                    const inv = d2 > 1e-6 ? 1 / d2 : 0;
+                    const approachAngle = jfx * dx * inv + jfz * dz * inv;
+                    const movementAlignment = fwdX * jfx + fwdZ * jfz;
                     const now = performance.now();
-                    const timeSinceLastJump = now - this.lastJumpRampTime;
-
-                    // Launch if:
-                    // - Approaching from behind the jump (approachAngle < 0.3)
-                    // - Moving in similar direction to jump (movementAlignment > 0)
-                    // - Close enough to the ramp
-                    // - Going fast enough
-                    // - On the ground
-                    // - Haven't just jumped
-                    if (distance2D < jumpRadius * 0.7 &&
-                        approachAngle < 0.5 &&
-                        movementAlignment > -0.3 &&
-                        this.isGrounded &&
-                        skierSpeed > 5 &&
-                        timeSinceLastJump > 800) {
-
-                        // Launch off the jump - gentler boost based on speed and jump size
+                    if (d2 < jumpRadius * 0.7 && approachAngle < 0.5 && movementAlignment > -0.3 &&
+                        this.isGrounded && skierSpeed > 5 && now - this.lastJumpRampTime > 800) {
                         const launchPower = Math.min(skierSpeed * 0.1 * jumpScale, 4);
-                        this.verticalVelocity = launchPower + 1; // Base launch + speed bonus (max ~5)
+                        this.verticalVelocity = launchPower + 1;
                         this.isGrounded = false;
                         this.isJumping = true;
                         this.lastJumpRampTime = now;
+                        events.emit('ski:jump', { source: 'ramp', power: this.verticalVelocity, speed: skierSpeed });
+                        this.sprayBurst(sx, this.position.y, sz, 14, 0.6, 0.6);
                     }
                 }
-                continue; // Don't collide with jumps
+                continue;
             }
 
-            // Regular collision check for other objects
-            const distance = skierPos.distanceTo(objPos);
-            const collisionRadius = this.getCollisionRadius(obj);
-            if (distance < collisionRadius + 0.5) {
-                // Collision! Stop the skier and bounce back slightly
-                const pushDir = skierPos.clone().sub(objPos).normalize();
-                this.position.x += pushDir.x * 0.5;
-                this.position.z += pushDir.z * 0.5;
-                this.currentSpeed *= 0.3; // Lose most speed on collision
-                this.velocity.multiplyScalar(0.3);
+            const kids = this._childColliders(obj);
+            if (kids.length) {
+                for (let k = 0; k < kids.length; k++) {
+                    const c = kids[k];
+                    this._collideWith(c.pos.x, c.pos.y, c.pos.z, c.radius, sx, sy, sz, obj, list[i].type);
+                }
+            } else {
+                const r = obj.userData.collisionRadius ?? this.getCollisionRadius(obj);
+                this._collideWith(obj.position.x, obj.position.y, obj.position.z, r, sx, sy, sz, obj, list[i].type);
             }
         }
     }
 
-    // Get collision radius for different object types
+    _collideWith(ox, oy, oz, radius, sx, sy, sz, obj, type) {
+        const dx = sx - ox, dy = sy - oy, dz = sz - oz;
+        const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        if (dist >= radius + 0.5) return;
+        const inv = dist > 1e-6 ? 1 / dist : 0;
+        const impactSpeed = Math.abs(this.currentSpeed);
+        this.position.x += dx * inv * 0.5;
+        this.position.z += dz * inv * 0.5;
+        this.currentSpeed *= 0.3;
+        this.velocity.multiplyScalar(0.3);
+
+        const now = performance.now();
+        if (now - this._lastCollideTime > 350) {
+            this._lastCollideTime = now;
+            events.emit('ski:collide', { type: type || obj.name || 'object', speed: impactSpeed });
+            if (impactSpeed > 4) {
+                this._addTrauma(Math.min(0.6, 0.2 + impactSpeed / 80));
+                this.pose.squash = Math.max(this.pose.squash, 0.5);
+                this.sprayBurst(this.position.x, this.position.y + 0.3, this.position.z, 18, 0.8, 0.1);
+            }
+        }
+    }
+
     getCollisionRadius(obj) {
-        const name = obj.name || '';
-        if (name.includes('lodge') || name.includes('Lodge')) return 3;
-        if (name.includes('Tree') || name.includes('tree')) return 0.5;
+        const name = (obj.name || '').toLowerCase();
+        if (name.includes('lodge') || name.includes('cabin')) {
+            const fp = obj.userData && obj.userData.footprint;
+            return typeof fp === 'number' ? Math.max(3, fp * 0.8) * (obj.scale.x || 1) : 3;
+        }
+        if (name.includes('tree')) return 0.5;
         if (name.includes('snowman')) return 0.6;
         if (name.includes('flag')) return 0.2;
-        if (name.includes('lift') || name.includes('Lift')) return 1;
-        return 1; // Default radius
+        if (name.includes('lift') || name.includes('gondola')) return 1;
+        return 1;
     }
 
-    // Properly align skier mesh to terrain surface
-    alignToTerrain(terrainNormal) {
-        // Get the up vector (terrain normal when grounded, world up when airborne)
-        const up = this.isGrounded ? terrainNormal.clone().normalize() : new THREE.Vector3(0, 1, 0);
-
-        // Forward direction based on skier's facing rotation
-        let forward = new THREE.Vector3(
-            Math.sin(this.rotation),
-            0,
-            Math.cos(this.rotation)
-        );
-
-        // Project forward onto the terrain plane (perpendicular to normal)
-        forward.sub(up.clone().multiplyScalar(forward.dot(up)));
-        forward.normalize();
-
-        // Right vector (cross product of up and forward)
-        const right = new THREE.Vector3().crossVectors(up, forward).normalize();
-
-        // Recalculate forward to ensure orthogonality
+    // =====================================================================
+    // ORIENTATION + BODY ANIMATION
+    // =====================================================================
+    alignToTerrain(terrainNormal, delta = 1 / 60) {
+        const up = this.isGrounded ? _v3.copy(terrainNormal).normalize() : _v3.set(0, 1, 0);
+        const forward = _v4.set(Math.sin(this.rotation), 0, Math.cos(this.rotation));
+        forward.addScaledVector(up, -forward.dot(up)).normalize();
+        const right = _s1.crossVectors(up, forward).normalize();
         forward.crossVectors(right, up).normalize();
+        _m1.makeBasis(right, up, forward);
+        _q1.setFromRotationMatrix(_m1);
 
-        // Build rotation matrix from these vectors
-        const rotationMatrix = new THREE.Matrix4();
-        rotationMatrix.makeBasis(right, up, forward);
-
-        // Apply rotation to mesh
-        this.mesh.quaternion.setFromRotationMatrix(rotationMatrix);
-
-        // Apply edge lean (rotate around forward axis)
+        // Edge lean, stronger with speed
+        const leanScale = 0.25 + 0.4 * Math.min(Math.abs(this.currentSpeed) / 30, 1);
         if (Math.abs(this.edgeAngle) > 0.01) {
-            const leanQuat = new THREE.Quaternion();
-            leanQuat.setFromAxisAngle(forward, -this.edgeAngle * 0.6);
-            this.mesh.quaternion.multiply(leanQuat);
+            _q2.setFromAxisAngle(forward, -this.edgeAngle * leanScale);
+            _q1.multiply(_q2);
         }
 
-        // Apply flip rotation when airborne - use world-space horizontal axis
-        if (this.isFlipping && !this.isGrounded) {
-            // Calculate a pure horizontal right vector based on skier's facing direction
-            // This ensures flips are straight forward/back, not at an angle
-            const flipAxis = new THREE.Vector3(
-                Math.cos(this.rotation),  // perpendicular to facing direction
-                0,
-                -Math.sin(this.rotation)
-            );
-            const flipQuat = new THREE.Quaternion();
-            flipQuat.setFromAxisAngle(flipAxis, this.flipRotation);
-            this.mesh.quaternion.multiply(flipQuat);
+        // Smooth the terrain-following orientation (kills jitter on bumpy snow)
+        if (!this._baseQuat) this._baseQuat = new THREE.Quaternion();
+        if (!this._baseQuatValid) {
+            this._baseQuat.copy(_q1);
+            this._baseQuatValid = true;
+        } else {
+            this._baseQuat.slerp(_q1, 1 - Math.exp(-16 * delta));
         }
+        this.mesh.quaternion.copy(this._baseQuat);
 
-        // Apply spin rotation when airborne
-        if (this.isSpinning && !this.isGrounded) {
-            const spinQuat = new THREE.Quaternion();
-            spinQuat.setFromAxisAngle(up, this.spinRotation);
-            this.mesh.quaternion.multiply(spinQuat);
+        const tricking = !this.isGrounded && (this.isFlipping || this.isSpinning);
+        if (tricking) {
+            if (this.isFlipping) {
+                _v2.set(Math.cos(this.rotation), 0, -Math.sin(this.rotation));
+                _q2.setFromAxisAngle(_v2, this.flipRotation);
+                this.mesh.quaternion.premultiply(_q2);
+            }
+            if (this.isSpinning) {
+                _q2.setFromAxisAngle(_up, this.spinRotation);
+                this.mesh.quaternion.premultiply(_q2);
+            }
+            // Rotate about the body's centre instead of the feet.
+            const cy = 0.8;
+            _v2.set(0, cy, 0).applyQuaternion(this._baseQuat);
+            _s1.set(0, cy, 0).applyQuaternion(this.mesh.quaternion);
+            this.mesh.position.copy(this.position).add(_v2).sub(_s1);
         }
     }
 
-    // Animate body parts for more life-like movement
+    resetBodyParts() {
+        const p = this.pose;
+        p.shinLean = 0.42; p.torsoLean = 0.32; p.torsoRoll = 0; p.torsoTwist = 0; p.headPitch = -0.2;
+        p.legDiff = 0; p.squash = 0;
+        for (const side of [1, -1]) {
+            const a = p.arms[side];
+            a.sx = -0.55; a.sz = side * 0.3; a.elbow = -0.75; a.prx = 0.55; a.prz = side * 0.1;
+            this._plant[side] = 0;
+        }
+        this._baseQuatValid = false;
+        if (this.rig) this._applyPose();
+    }
+
     animateBody(delta) {
-        if (!this.bodyParts.torso) return;
+        if (!this.rig) return;
+        const p = this.pose;
+        const speed = Math.abs(this.currentSpeed);
+        const speed01 = clamp01(speed / 60);
+        const edge = this.edgeAngle;
+        const absEdge = Math.abs(edge);
+        const grounded = this.isGrounded;
+        const tuck = this.isTucking && grounded;
 
-        const torso = this.bodyParts.torso;
-        const speedFactor = this.currentSpeed / this.maxSpeed;
-
-        // Base skiing crouch position
-        let targetCrouch = 0.25;
-
-        // Crouch more when going fast
-        targetCrouch += speedFactor * 0.15;
-
-        // Crouch more when turning hard
-        targetCrouch += Math.abs(this.edgeAngle) * 0.1;
-
-        // Deep tuck when holding W (speed tuck)
-        if (this.isTucking && this.isGrounded) {
-            targetCrouch += 0.6; // Very low tuck position
+        // ---- pole plants on hard turn initiation
+        if (grounded && speed > 6 && absEdge > 0.55 && this._prevAbsEdge <= 0.55) {
+            const inside = edge > 0 ? 1 : -1;
+            this._plant[inside] = 0.42;
         }
+        this._prevAbsEdge = absEdge;
+        for (const s of SIDES) if (this._plant[s] > 0) this._plant[s] = Math.max(0, this._plant[s] - delta);
 
-        // Tuck position when airborne (if not flipping)
-        if (!this.isGrounded && !this.isFlipping) {
-            targetCrouch += 0.3;
+        // ---- targets
+        let shin = 0.42 + speed01 * 0.12 + absEdge * 0.24;
+        let lean = 0.3 + speed01 * 0.16 + absEdge * 0.08;
+        let headPitch = -0.2;
+        let legDiff = edge * 0.14; // inside leg bends more
+        let roll = edge * 0.2 * Math.min(speed / 25, 1); // angulation (upper body stays level)
+        let twist = -edge * 0.12;
+
+        if (grounded && speed < 1.2 && !tuck) {
+            shin = 0.3 + Math.sin(this._time * 2.2) * 0.015; // idle breathing
+            lean = 0.2;
         }
-
-        // Tuck tight during flips
-        if (this.isFlipping) {
-            targetCrouch += 0.5;
+        if (tuck) { shin = 0.98; lean = 1.12; headPitch = -0.95; legDiff *= 0.3; }
+        if (this.isBraking && grounded) { shin = 0.6; lean = 0.18; legDiff = 0; }
+        if (!grounded) {
+            shin = 0.66; lean = 0.38; legDiff = 0; roll = 0; twist = 0;
+            if (this.isFlipping) { shin = 1.2; lean = 1.0; headPitch = -0.6; }
+            else if (this.isSpinning) { shin = 0.82; lean = 0.5; }
         }
+        headPitch = Math.min(headPitch, -lean * 0.72);
 
-        // Smoothly interpolate torso bend
-        torso.rotation.x = THREE.MathUtils.lerp(torso.rotation.x, targetCrouch, 0.15);
+        // landing squash decays (~120ms to mostly recover)
+        p.squash *= Math.exp(-9 * delta);
+        shin += p.squash * 0.5;
 
-        // Add subtle side-to-side movement when turning
-        const targetSideLean = this.edgeAngle * 0.15;
-        torso.rotation.z = THREE.MathUtils.lerp(torso.rotation.z || 0, targetSideLean, 0.1);
+        const k = 12;
+        p.shinLean = damp(p.shinLean, shin, k, delta);
+        p.torsoLean = damp(p.torsoLean, lean, 9, delta);
+        p.headPitch = damp(p.headPitch, headPitch, 9, delta);
+        p.legDiff = damp(p.legDiff, legDiff, 8, delta);
+        p.torsoRoll = damp(p.torsoRoll, roll, 7, delta);
+        p.torsoTwist = damp(p.torsoTwist, twist, 6, delta);
 
-        // Animate head - duck down when tucking
-        const isTuckingGrounded = this.isTucking && this.isGrounded;
-
-        // Head position targets
-        let targetHeadY = 1.52;
-        let targetHeadZ = 0.05;
-        let targetHeadRotX = 0;
-
-        if (isTuckingGrounded) {
-            targetHeadY = 1.15; // Lower head
-            targetHeadZ = 0.25; // Move head forward
-            targetHeadRotX = 0.4; // Tilt head down
-        } else if (this.isFlipping) {
-            targetHeadY = 1.3;
-            targetHeadZ = 0.15;
-            targetHeadRotX = 0.3;
-        }
-
-        if (this.bodyParts.head) {
-            const head = this.bodyParts.head;
-            head.position.y = THREE.MathUtils.lerp(head.position.y, targetHeadY, 0.15);
-            head.position.z = THREE.MathUtils.lerp(head.position.z, targetHeadZ, 0.15);
-            head.rotation.x = THREE.MathUtils.lerp(head.rotation.x || 0, targetHeadRotX, 0.15);
-        }
-
-        // Animate helmet to follow head
-        if (this.bodyParts.helmet) {
-            const helmet = this.bodyParts.helmet;
-            const targetHelmetY = targetHeadY + 0.04;
-            const targetHelmetZ = targetHeadZ - 0.03;
-            helmet.position.y = THREE.MathUtils.lerp(helmet.position.y, targetHelmetY, 0.15);
-            helmet.position.z = THREE.MathUtils.lerp(helmet.position.z, targetHelmetZ, 0.15);
-            helmet.rotation.x = THREE.MathUtils.lerp(helmet.rotation.x, -0.1 + targetHeadRotX, 0.15);
-        }
-
-        // Animate goggles to follow head
-        if (this.bodyParts.goggles) {
-            const goggles = this.bodyParts.goggles;
-            const targetGogglesY = targetHeadY;
-            const targetGogglesZ = targetHeadZ + 0.11;
-            goggles.position.y = THREE.MathUtils.lerp(goggles.position.y, targetGogglesY, 0.15);
-            goggles.position.z = THREE.MathUtils.lerp(goggles.position.z, targetGogglesZ, 0.15);
-        }
-
-        // Animate goggle strap to follow head
-        if (this.bodyParts.strap) {
-            const strap = this.bodyParts.strap;
-            const targetStrapY = targetHeadY + 0.02;
-            const targetStrapZ = targetHeadZ - 0.03;
-            strap.position.y = THREE.MathUtils.lerp(strap.position.y, targetStrapY, 0.15);
-            strap.position.z = THREE.MathUtils.lerp(strap.position.z, targetStrapZ, 0.15);
-        }
-
-        // Animate arms - natural skiing stance or tuck
-        if (this.bodyParts.leftArm && this.bodyParts.rightArm) {
-            [-1, 1].forEach(side => {
-                const arm = side === -1 ? this.bodyParts.leftArm : this.bodyParts.rightArm;
-
-                // Default natural skiing stance - arms bent, hands forward at waist
-                let targetUpperArmX = side * 0.24;
-                let targetUpperArmY = 0.95;
-                let targetUpperArmZ = 0.05;
-                let targetUpperArmRotX = 0.3;
-                let targetUpperArmRotZ = side * -0.4;
-
-                let targetForearmX = side * 0.32;
-                let targetForearmY = 0.72;
-                let targetForearmZ = 0.22;
-                let targetForearmRotX = 1.1;
-                let targetForearmRotZ = side * -0.15;
-
-                let targetGloveX = side * 0.28;
-                let targetGloveY = 0.58;
-                let targetGloveZ = 0.42;
-
-                // Subtle arm movement when turning
-                if (Math.abs(this.edgeAngle) > 0.1 && this.isGrounded && !isTuckingGrounded) {
-                    // Arms move slightly for balance when turning
-                    const turnOffset = this.edgeAngle * 0.1;
-                    targetUpperArmRotZ += turnOffset;
-                    targetGloveY += Math.abs(this.edgeAngle) * 0.05;
+        // ---- arms + poles
+        for (const side of SIDES) {
+            const a = p.arms[side];
+            let sx = -0.55, sz = side * 0.3, el = -0.75, prx = 0.55, prz = side * 0.1;
+            const swing = edge * side; // + = inside arm
+            if (grounded && !tuck) {
+                sx += swing * 0.3;
+                sz += side * absEdge * 0.12;
+                if (this._plant[side] > 0) {
+                    const t = this._plant[side] / 0.42;
+                    const reach = Math.sin(t * Math.PI);
+                    sx -= 0.45 * reach;
+                    prx = THREE.MathUtils.lerp(0.55, -0.35, reach);
+                    prz = side * (0.1 + 0.15 * reach);
                 }
-
-                if (isTuckingGrounded) {
-                    // Deep tuck - arms pulled in tight, hands together forward
-                    targetUpperArmX = side * 0.18;
-                    targetUpperArmY = 0.7;
-                    targetUpperArmZ = 0.12;
-                    targetUpperArmRotX = 1.3;
-                    targetUpperArmRotZ = side * -0.2;
-
-                    targetForearmX = side * 0.12;
-                    targetForearmY = 0.5;
-                    targetForearmZ = 0.38;
-                    targetForearmRotX = 1.6;
-                    targetForearmRotZ = side * -0.05;
-
-                    targetGloveX = side * 0.08;
-                    targetGloveY = 0.4;
-                    targetGloveZ = 0.52;
-                }
-
-                // Apply upper arm animation
-                if (arm.upperArm) {
-                    arm.upperArm.position.x = THREE.MathUtils.lerp(arm.upperArm.position.x, targetUpperArmX, 0.12);
-                    arm.upperArm.position.y = THREE.MathUtils.lerp(arm.upperArm.position.y, targetUpperArmY, 0.12);
-                    arm.upperArm.position.z = THREE.MathUtils.lerp(arm.upperArm.position.z, targetUpperArmZ, 0.12);
-                    arm.upperArm.rotation.x = THREE.MathUtils.lerp(arm.upperArm.rotation.x, targetUpperArmRotX, 0.12);
-                    arm.upperArm.rotation.z = THREE.MathUtils.lerp(arm.upperArm.rotation.z, targetUpperArmRotZ, 0.12);
-                }
-
-                // Apply forearm animation
-                if (arm.forearm) {
-                    arm.forearm.position.x = THREE.MathUtils.lerp(arm.forearm.position.x, targetForearmX, 0.12);
-                    arm.forearm.position.y = THREE.MathUtils.lerp(arm.forearm.position.y, targetForearmY, 0.12);
-                    arm.forearm.position.z = THREE.MathUtils.lerp(arm.forearm.position.z, targetForearmZ, 0.12);
-                    arm.forearm.rotation.x = THREE.MathUtils.lerp(arm.forearm.rotation.x, targetForearmRotX, 0.12);
-                    arm.forearm.rotation.z = THREE.MathUtils.lerp(arm.forearm.rotation.z, targetForearmRotZ, 0.12);
-                }
-
-                // Apply glove animation
-                if (arm.glove) {
-                    arm.glove.position.x = THREE.MathUtils.lerp(arm.glove.position.x, targetGloveX, 0.12);
-                    arm.glove.position.y = THREE.MathUtils.lerp(arm.glove.position.y, targetGloveY, 0.12);
-                    arm.glove.position.z = THREE.MathUtils.lerp(arm.glove.position.z, targetGloveZ, 0.12);
-                }
-
-                // Animate pole to follow hand
-                const pole = side === -1 ? this.bodyParts.leftPole : this.bodyParts.rightPole;
-                if (pole) {
-                    // Pole position follows glove
-                    pole.position.x = THREE.MathUtils.lerp(pole.position.x, targetGloveX, 0.12);
-                    pole.position.y = THREE.MathUtils.lerp(pole.position.y, targetGloveY, 0.12);
-                    pole.position.z = THREE.MathUtils.lerp(pole.position.z, targetGloveZ, 0.12);
-
-                    // Pole rotation - normal stance has poles angled back, tuck has them horizontal
-                    let targetPoleRotX = -0.2; // Slight backward angle in normal stance
-                    let targetPoleRotY = side * 0.3; // Angled outward
-                    let targetPoleRotZ = side * 0.15;
-
-                    if (isTuckingGrounded) {
-                        // Poles tucked under arms, more horizontal and parallel
-                        targetPoleRotX = 0.9;
-                        targetPoleRotY = side * 0.1;
-                        targetPoleRotZ = side * 0.4;
-                    }
-
-                    pole.rotation.x = THREE.MathUtils.lerp(pole.rotation.x || 0, targetPoleRotX, 0.12);
-                    pole.rotation.y = THREE.MathUtils.lerp(pole.rotation.y || 0, targetPoleRotY, 0.12);
-                    pole.rotation.z = THREE.MathUtils.lerp(pole.rotation.z || 0, targetPoleRotZ, 0.12);
-                }
-            });
-        }
-
-        // Animate legs - bend more when tucking
-        if (this.bodyParts.leftThigh && this.bodyParts.rightThigh) {
-            let targetThighRotX = 0.8; // Normal skiing stance
-            let targetThighY = 0.62;
-            let targetThighZ = 0.08;
-
-            if (this.isTucking && this.isGrounded) {
-                targetThighRotX = 1.4; // Much more bent
-                targetThighY = 0.45; // Lower
-                targetThighZ = 0.2; // More forward
-            } else if (this.isFlipping) {
-                targetThighRotX = 1.2;
-                targetThighY = 0.5;
+                if (speed < 1.2) { sx = -0.35; sz = side * 0.22; el = -0.5; prx = 0.25; }
             }
-
-            [this.bodyParts.leftThigh, this.bodyParts.rightThigh].forEach(thigh => {
-                thigh.rotation.x = THREE.MathUtils.lerp(thigh.rotation.x, targetThighRotX, 0.15);
-                thigh.position.y = THREE.MathUtils.lerp(thigh.position.y, targetThighY, 0.15);
-                thigh.position.z = THREE.MathUtils.lerp(thigh.position.z, targetThighZ, 0.15);
-            });
-        }
-
-        // Animate shins
-        if (this.bodyParts.leftShin && this.bodyParts.rightShin) {
-            let targetShinRotX = 0.15; // Normal stance
-            let targetShinY = 0.32;
-            let targetShinZ = 0.18;
-
-            if (this.isTucking && this.isGrounded) {
-                targetShinRotX = -0.3; // Angled back
-                targetShinY = 0.22; // Lower
-                targetShinZ = 0.3; // More forward
+            if (tuck) { sx = -1.25; sz = side * 0.1; el = -1.4; prx = 1.42; prz = side * 0.05; }
+            if (this.isBraking && grounded) { sx = -0.75; sz = side * 0.45; el = -0.6; prx = 0.2; prz = side * 0.35; }
+            if (!grounded) {
+                sx = -0.35; sz = side * 0.85; el = -0.45; prx = 0.85; prz = side * 0.45;
+                if (this.isFlipping) { sx = -1.15; sz = side * 0.18; el = -1.65; prx = 1.3; prz = side * 0.1; }
+                else if (this.isSpinning) { sx = -0.9; sz = side * 0.35; el = -1.1; prx = 1.0; prz = side * 0.3; }
             }
-
-            [this.bodyParts.leftShin, this.bodyParts.rightShin].forEach(shin => {
-                shin.rotation.x = THREE.MathUtils.lerp(shin.rotation.x, targetShinRotX, 0.15);
-                shin.position.y = THREE.MathUtils.lerp(shin.position.y, targetShinY, 0.15);
-                shin.position.z = THREE.MathUtils.lerp(shin.position.z, targetShinZ, 0.15);
-            });
+            a.sx = damp(a.sx, sx, k, delta);
+            a.sz = damp(a.sz, sz, k, delta);
+            a.elbow = damp(a.elbow, el, k, delta);
+            a.prx = damp(a.prx, prx, k, delta);
+            a.prz = damp(a.prz, prz, k, delta);
         }
 
-        // Subtle bobbing motion based on speed
-        if (this.isGrounded && this.currentSpeed > 2 && !this.isTucking) {
-            const bob = Math.sin(performance.now() * 0.01 * speedFactor) * 0.02 * speedFactor;
-            torso.position.y = 1.05 + bob;
-        } else if (this.isTucking) {
-            torso.position.y = THREE.MathUtils.lerp(torso.position.y, 0.85, 0.15); // Lower torso when tucking
+        this._applyPose();
+    }
+
+    /** Write the pose state onto the rig (legs -> hip -> torso -> arms -> poles). */
+    _applyPose() {
+        const p = this.pose;
+        const Ls = 0.44, Lt = 0.44;
+        let hipY = 0, hipZ = 0;
+        for (const side of SIDES) {
+            const leg = this._legs[side];
+            const a = p.shinLean + p.legDiff * side * 0.5;
+            const b = a * 0.92;
+            leg.shinPivot.rotation.x = a;
+            leg.kneePivot.rotation.x = -(a + b);
+            hipY += 0.03 + 0.18 + Ls * Math.cos(a) + Lt * Math.cos(b);
+            hipZ += -0.01 + Ls * Math.sin(a) - Lt * Math.sin(b);
+        }
+        hipY *= 0.5;
+        hipZ *= 0.5;
+
+        const torso = this._torso;
+        torso.position.set(0, hipY - 0.04, hipZ);
+        torso.rotation.set(p.torsoLean, p.torsoTwist, p.torsoRoll, 'YXZ');
+        this._head.rotation.x = p.headPitch;
+
+        for (const side of SIDES) {
+            const arm = this._arms[side];
+            const a = p.arms[side];
+            arm.shoulder.rotation.set(a.sx, 0, a.sz);
+            arm.elbow.rotation.x = a.elbow;
+        }
+
+        const s = p.squash;
+        this.rig.scale.set(1 + 0.06 * s, 1 - 0.12 * s, 1 + 0.06 * s);
+
+        // Glue poles to the hands (rig space).
+        this.mesh.updateMatrixWorld(true);
+        for (const side of SIDES) {
+            const pole = this._poles[side];
+            const hand = this._arms[side].hand;
+            hand.getWorldPosition(_v2);
+            this.rig.worldToLocal(_v2);
+            pole.position.copy(_v2);
+            const a = p.arms[side];
+            pole.rotation.set(a.prx, 0, a.prz);
         }
     }
 
-    updateCamera(delta) {
-        let targetCameraPos;
-        let lookTarget;
+    // =====================================================================
+    // CAMERA
+    // =====================================================================
+    _addTrauma(amount) {
+        this._trauma = Math.min(1, this._trauma + amount);
+    }
 
-        // Special camera for rolling head during ragdoll
+    updateCamera(dt) {
+        const cam = this.camera;
+        let fx, fy, fz;          // focus point
+        let dist, height, lookAhead, yaw;
+        let posK = 4.5, lookK = 8;
+        let targetFov = this._savedFov;
+        let targetRoll = 0;
+
         if (this.isRagdolling && this.headSnowball) {
             const head = this.headSnowball;
+            const hp = head.mesh.position;
+            const vx = head.velocity.x, vz = head.velocity.z;
+            if (vx * vx + vz * vz > 0.25) this.cameraYaw = dampAngle(this.cameraYaw, Math.atan2(vx, vz), 2.2, dt);
+            yaw = this.cameraYaw;
+            fx = hp.x; fz = hp.z;
+            fy = this.mountain.getHeightAt(hp.x, hp.z) + head.size * 0.3;
+            // Pulled back and raised so the tumble is framed against the slope
+            // rather than the slope filling the bottom of the frame.
+            dist = 10 + head.size * 1.3;
+            height = 6.5 + head.size * 0.9;
+            lookAhead = 0;
+            posK = 3; lookK = 6;
+            targetFov = this._savedFov + 4;
+        } else {
+            const vx = this.velocity.x, vz = this.velocity.z;
+            if (vx * vx + vz * vz > 1) this.cameraYaw = dampAngle(this.cameraYaw, Math.atan2(vx, vz), 2.45, dt);
+            yaw = this.cameraYaw;
+            const speed01 = clamp01(Math.abs(this.currentSpeed) / 60);
+            const tuck = this.isTucking && this.isGrounded ? 1 : 0;
+            const ground = this.mountain.getHeightAt(this.position.x, this.position.z);
+            const hAir = Math.max(0, this.position.y - ground);
 
-            // Camera follows behind the rolling direction
-            const moveDir = head.velocity.clone();
-            moveDir.y = 0; // Ignore vertical for direction
-            if (moveDir.length() > 0.5) {
-                moveDir.normalize();
-            } else {
-                moveDir.set(0, 0, 1); // Default direction
-            }
-
-            // Position camera behind and above the rolling head
-            const distance = 8 + head.size * 0.8; // Further back
-            const height = 5 + head.size * 0.5; // Higher up
-
-            // Smooth target position - don't follow terrain bumps exactly
-            const smoothedHeadPos = head.mesh.position.clone();
-            const groundHeight = this.mountain.getHeightAt(smoothedHeadPos.x, smoothedHeadPos.z);
-            smoothedHeadPos.y = groundHeight + head.size * 0.3; // Slightly above ground
-
-            targetCameraPos = smoothedHeadPos.clone()
-                .add(moveDir.clone().multiplyScalar(-distance))
-                .add(new THREE.Vector3(0, height, 0));
-
-            // Keep camera above terrain
-            const camTerrainHeight = this.mountain.getHeightAt(targetCameraPos.x, targetCameraPos.z);
-            targetCameraPos.y = Math.max(targetCameraPos.y, camTerrainHeight + 3);
-
-            // Look at the head (smoothed position)
-            lookTarget = smoothedHeadPos.clone();
-            lookTarget.y += head.size * 0.3;
-
-            // Very smooth camera movement
-            this.camera.position.lerp(targetCameraPos, 0.04);
-            this.camera.lookAt(lookTarget);
-            return;
+            fx = this.position.x; fz = this.position.z;
+            // In the air, the anchor rides only partway up so big air reads as height.
+            fy = this.isGrounded ? this.position.y : ground + hAir * 0.55;
+            dist = this.cameraOffset.z + speed01 * 1.8 - tuck * 1.3 + Math.min(hAir * 0.3, 6);
+            height = this.cameraOffset.y + speed01 * 0.5 - tuck * 0.75 + Math.min(hAir * 0.3, 6);
+            lookAhead = this.cameraLookAhead + speed01 * 7;
+            posK = this.isGrounded ? 4.5 : 3.2;
+            targetFov = this._savedFov + speed01 * 14 + tuck * 3;
+            if (this.isGrounded) targetRoll = this.edgeAngle * 4 * DEG * Math.min(Math.abs(this.currentSpeed) / 25, 1);
         }
 
-        // Normal skiing camera — follows MOVEMENT direction, not facing direction
-        // This keeps the camera stable during switch skiing (no snap after spins)
+        const sinY = Math.sin(yaw), cosY = Math.cos(yaw);
 
-        // Compute movement direction angle from velocity
-        const velLenSq = this.velocity.x * this.velocity.x + this.velocity.z * this.velocity.z;
-        if (velLenSq > 1) {
-            const moveAngle = Math.atan2(this.velocity.x, this.velocity.z);
-            // Smooth cameraYaw toward movement direction (handles angle wrapping)
-            let angleDiff = moveAngle - this.cameraYaw;
-            angleDiff = Math.atan2(Math.sin(angleDiff), Math.cos(angleDiff)); // normalize to -π..π
-            this.cameraYaw += angleDiff * 0.04; // Very smooth follow
+        // Smoothed anchor height; x/z track exactly so speed never lets the skier slip out of frame.
+        this._camAnchorY = damp(this._camAnchorY, fy, 7, dt);
+
+        // Desired offset (relative to the anchor) -> damped
+        _v2.set(-sinY * dist, height, -cosY * dist);
+        this._camOffset.x = damp(this._camOffset.x, _v2.x, posK, dt);
+        this._camOffset.y = damp(this._camOffset.y, _v2.y, posK, dt);
+        this._camOffset.z = damp(this._camOffset.z, _v2.z, posK, dt);
+
+        const base = _v3.set(fx + this._camOffset.x, this._camAnchorY + this._camOffset.y, fz + this._camOffset.z);
+        const minY = this.mountain.getHeightAt(base.x, base.z) + 1.4;
+        if (base.y < minY) {
+            this._camOffset.y += minY - base.y;
+            base.y = minY;
         }
-
-        // Position camera behind movement direction using cameraYaw
-        const backDir = new THREE.Vector3(
-            -Math.sin(this.cameraYaw),
-            0,
-            -Math.cos(this.cameraYaw)
-        );
-
-        // Camera behind and above skier
-        targetCameraPos = this.position.clone()
-            .add(backDir.multiplyScalar(this.cameraOffset.z))
-            .add(new THREE.Vector3(0, this.cameraOffset.y, 0));
-
-        // Ensure camera doesn't go below terrain
-        const terrainHeightAtCamera = this.mountain.getHeightAt(targetCameraPos.x, targetCameraPos.z);
-        const minCameraHeight = terrainHeightAtCamera + 3.0;
-        if (targetCameraPos.y < minCameraHeight) {
-            targetCameraPos.y = minCameraHeight;
-        }
-
-        // Keep camera steady relative to ground during jumps
-        if (!this.isGrounded) {
-            const groundHeight = this.mountain.getHeightAt(this.position.x, this.position.z);
-            targetCameraPos.y = Math.max(targetCameraPos.y, groundHeight + this.cameraOffset.y);
-        }
-
-        // Smooth camera movement (extra smooth for stability)
-        const smoothness = this.isGrounded ? this.cameraSmoothness : this.cameraSmoothness * 0.5;
-        this.camera.position.lerp(targetCameraPos, smoothness);
-
-        // Look at skier — use movement direction for look-ahead, not facing
-        lookTarget = this.position.clone();
-        lookTarget.y += 1.0;
-        lookTarget.add(new THREE.Vector3(
-            Math.sin(this.cameraYaw) * this.cameraLookAhead,
-            0,
-            Math.cos(this.cameraYaw) * this.cameraLookAhead
-        ));
-
-        this.camera.lookAt(lookTarget);
-    }
-
-    updateHUD() {
-        // Convert speed to mph (approximate scaling: internal units * 2.24)
-        const speedMph = Math.round(Math.abs(this.currentSpeed) * 2.24);
-        const speedEl = document.getElementById('speed-value');
-        if (speedEl) speedEl.textContent = speedMph;
-
-        // Update score
-        const scoreEl = document.getElementById('score-value');
-        if (scoreEl) scoreEl.textContent = this.score.toLocaleString();
-
-        // Update combo
-        const comboEl = document.getElementById('combo-value');
-        if (comboEl) {
-            if (this.comboMultiplier > 1) {
-                comboEl.textContent = `${this.comboMultiplier.toFixed(1)}x`;
-                comboEl.parentElement.classList.remove('hidden');
-            } else {
-                comboEl.parentElement.classList.add('hidden');
+        // Keep the view ray clear of the terrain: sample its midpoint too.
+        {
+            const mx = (base.x + fx) * 0.5, mz = (base.z + fz) * 0.5;
+            const midY = (base.y + this._camAnchorY) * 0.5;
+            const need = this.mountain.getHeightAt(mx, mz) + 1.2 - midY;
+            if (need > 0) {
+                this._camOffset.y += need * 2;
+                base.y += need * 2;
             }
         }
 
-        // Update stats
-        const maxSpeedEl = document.getElementById('max-speed-value');
-        if (maxSpeedEl) maxSpeedEl.textContent = Math.round(this.stats.maxSpeed * 2.24);
+        // Look target
+        const lookY = this.isRagdolling ? 0.4 + (this.headSnowball ? this.headSnowball.size * 0.35 : 0) : (this.isGrounded ? 1.0 : 1.0 + (this.position.y - this._camAnchorY) * 0.45);
+        _v2.set(sinY * lookAhead, lookY, cosY * lookAhead);
+        this._lookOffset.x = damp(this._lookOffset.x, _v2.x, lookK, dt);
+        this._lookOffset.y = damp(this._lookOffset.y, _v2.y, lookK, dt);
+        this._lookOffset.z = damp(this._lookOffset.z, _v2.z, lookK, dt);
+        const look = _v4.set(fx + this._lookOffset.x, this._camAnchorY + this._lookOffset.y, fz + this._lookOffset.z);
 
-        const airTimeEl = document.getElementById('air-time-value');
-        if (airTimeEl) airTimeEl.textContent = this.stats.totalAirTime.toFixed(1);
+        // Trauma shake (squared falloff), position + roll noise
+        this._trauma = Math.max(0, this._trauma - dt * 1.5);
+        this._shakeT += dt;
+        let shakeRoll = 0;
+        if (this._trauma > 0 && !this._reducedMotion) {
+            const s = this._trauma * this._trauma;
+            const t = this._shakeT * 30;
+            base.x += (Math.sin(t * 1.13) + Math.sin(t * 2.71 + 1.3) * 0.5) * 0.22 * s;
+            base.y += (Math.sin(t * 1.37 + 2.1) + Math.sin(t * 3.07) * 0.5) * 0.18 * s;
+            base.z += (Math.sin(t * 0.97 + 4.2) + Math.sin(t * 2.33 + 0.7) * 0.5) * 0.22 * s;
+            shakeRoll = (Math.sin(t * 1.71 + 0.5) + Math.sin(t * 3.3) * 0.4) * 2.2 * DEG * s;
+        }
 
-        const tricksEl = document.getElementById('tricks-value');
-        if (tricksEl) tricksEl.textContent = this.stats.tricksLanded;
+        cam.position.copy(base);
+        cam.lookAt(look);
+        this._camRoll = damp(this._camRoll, targetRoll, 4, dt);
+        const roll = this._camRoll + shakeRoll;
+        if (roll !== 0) cam.rotateZ(roll);
 
-        // Show trick status
-        const trickStatus = document.getElementById('trick-status');
-        if (trickStatus) {
-            // Show crash message during ragdoll
-            if (this.isRagdolling) {
-                if (this.crashHintCount < this.maxCrashHints) {
-                    trickStatus.textContent = 'Space to recover';
-                    trickStatus.style.color = '#f87171';
-                    trickStatus.classList.remove('hidden');
-                } else {
-                    trickStatus.classList.add('hidden');
-                }
-                return;
-            } else {
-                trickStatus.style.color = ''; // Reset color
-            }
-
-            if (this.isFlipping && this.isSpinning) {
-                // Combo trick!
-                const flipProgress = Math.abs(this.flipRotation) / (Math.PI * 2) * 100;
-                const flipName = this.flipDirection > 0 ? 'FRONTFLIP' : 'BACKFLIP';
-                const spinDegrees = Math.round(this.totalSpinDegrees / 180) * 180;
-                trickStatus.textContent = spinDegrees >= 180 ? `${spinDegrees}° ${flipName}!` : `${flipName}!`;
-                trickStatus.classList.remove('hidden');
-            } else if (this.isFlipping) {
-                const flipProgress = Math.abs(this.flipRotation) / (Math.PI * 2) * 100;
-                const trickName = this.flipDirection > 0 ? 'FRONTFLIP' : 'BACKFLIP';
-                trickStatus.textContent = `${trickName} ${Math.min(100, Math.round(flipProgress))}%`;
-                trickStatus.classList.remove('hidden');
-            } else if (this.isSpinning) {
-                const spinDegrees = Math.round(this.totalSpinDegrees / 180) * 180;
-                trickStatus.textContent = spinDegrees >= 180 ? `${spinDegrees}°` : '\u21BB';
-                trickStatus.classList.remove('hidden');
-            } else if (!this.isGrounded && this.airHintCount < this.maxAirHints) {
-                trickStatus.textContent = 'AIR! (A/D=spin, W/S=flip)';
-                trickStatus.classList.remove('hidden');
-            } else if (!this.isGrounded) {
-                // Hide hint after shown enough times
-                trickStatus.classList.add('hidden');
-            } else {
-                trickStatus.classList.add('hidden');
-            }
+        this._camFov = damp(this._camFov, targetFov, 3, dt);
+        if (Math.abs(cam.fov - this._camFov) > 0.01) {
+            cam.fov = this._camFov;
+            cam.updateProjectionMatrix();
         }
     }
 
-    // Audio system
-    initAudio() {
-        if (this.isAudioInitialized) return;
-
-        try {
-            this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
-            this.isAudioInitialized = true;
-
-            // Create ski sound (filtered noise)
-            this.createSkiSound();
-        } catch (e) {
-            console.warn('Audio not available:', e);
-        }
-    }
-
-    createSkiSound() {
-        if (!this.audioContext) return;
-
-        // Create nodes
-        const bufferSize = 2 * this.audioContext.sampleRate;
-        const noiseBuffer = this.audioContext.createBuffer(1, bufferSize, this.audioContext.sampleRate);
-        const output = noiseBuffer.getChannelData(0);
-
-        // Fill with noise
-        for (let i = 0; i < bufferSize; i++) {
-            output[i] = Math.random() * 2 - 1;
-        }
-
-        // Create source
-        this.noiseSource = this.audioContext.createBufferSource();
-        this.noiseSource.buffer = noiseBuffer;
-        this.noiseSource.loop = true;
-
-        // Create filters for ski sound
-        this.lowpass = this.audioContext.createBiquadFilter();
-        this.lowpass.type = 'lowpass';
-        this.lowpass.frequency.value = 500;
-
-        this.highpass = this.audioContext.createBiquadFilter();
-        this.highpass.type = 'highpass';
-        this.highpass.frequency.value = 100;
-
-        // Gain control
-        this.gainNode = this.audioContext.createGain();
-        this.gainNode.gain.value = 0;
-
-        // Connect nodes
-        this.noiseSource.connect(this.lowpass);
-        this.lowpass.connect(this.highpass);
-        this.highpass.connect(this.gainNode);
-        this.gainNode.connect(this.audioContext.destination);
-
-        // Start
-        this.noiseSource.start();
-    }
-
-    updateAudio() {
-        if (!this.audioContext || !this.gainNode) return;
-
-        // Modulate based on speed
-        const speedNormalized = this.currentSpeed / this.maxSpeed;
-
-        // Volume based on speed
-        const targetVolume = this.isGrounded ? speedNormalized * 0.15 : 0;
-        this.gainNode.gain.value = THREE.MathUtils.lerp(
-            this.gainNode.gain.value,
-            targetVolume,
-            0.1
-        );
-
-        // Filter frequency based on speed and turning
-        const baseFreq = 300 + speedNormalized * 800;
-        const turnModulation = Math.abs(this.edgeAngle) * 400;
-        this.lowpass.frequency.value = baseFreq + turnModulation;
-
-        // Higher frequencies when edging hard
-        this.highpass.frequency.value = 80 + Math.abs(this.edgeAngle) * 150;
-    }
-
-    stopAudio() {
-        if (this.gainNode) {
-            this.gainNode.gain.value = 0;
-        }
-        if (this.noiseSource) {
-            try {
-                this.noiseSource.stop();
-            } catch (e) {}
-        }
-        this.isAudioInitialized = false;
-    }
-
-    // Play awesome landing sound
-    playLandingSound(points) {
-        try {
-            const ctx = new (window.AudioContext || window.webkitAudioContext)();
-
-            // Create a pleasant "success" sound with multiple harmonics
-            const frequencies = [523.25, 659.25, 783.99]; // C5, E5, G5 (C major chord)
-
-            frequencies.forEach((freq, i) => {
-                const osc = ctx.createOscillator();
-                const gain = ctx.createGain();
-
-                osc.type = 'sine';
-                osc.frequency.value = freq;
-
-                gain.gain.setValueAtTime(0, ctx.currentTime);
-                gain.gain.linearRampToValueAtTime(0.15, ctx.currentTime + 0.02);
-                gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4 + i * 0.1);
-
-                osc.connect(gain);
-                gain.connect(ctx.destination);
-
-                osc.start(ctx.currentTime + i * 0.05);
-                osc.stop(ctx.currentTime + 0.6);
-            });
-
-            // Add a nice "ding" on top for big tricks
-            if (points > 300) {
-                const ding = ctx.createOscillator();
-                const dingGain = ctx.createGain();
-                ding.type = 'sine';
-                ding.frequency.value = 1046.5; // C6
-                dingGain.gain.setValueAtTime(0.2, ctx.currentTime);
-                dingGain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.3);
-                ding.connect(dingGain);
-                dingGain.connect(ctx.destination);
-                ding.start(ctx.currentTime + 0.1);
-                ding.stop(ctx.currentTime + 0.5);
-            }
-        } catch (e) {
-            // Audio not available
-        }
-    }
-
-    // Play crash sound
-    playCrashSound() {
-        try {
-            const ctx = new (window.AudioContext || window.webkitAudioContext)();
-
-            // Create a "thud" sound using noise
-            const bufferSize = ctx.sampleRate * 0.3;
-            const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
-            const data = buffer.getChannelData(0);
-
-            for (let i = 0; i < bufferSize; i++) {
-                data[i] = (Math.random() * 2 - 1) * Math.exp(-i / (ctx.sampleRate * 0.05));
-            }
-
-            const source = ctx.createBufferSource();
-            source.buffer = buffer;
-
-            const filter = ctx.createBiquadFilter();
-            filter.type = 'lowpass';
-            filter.frequency.value = 200;
-
-            const gain = ctx.createGain();
-            gain.gain.setValueAtTime(0.3, ctx.currentTime);
-            gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.3);
-
-            source.connect(filter);
-            filter.connect(gain);
-            gain.connect(ctx.destination);
-
-            source.start();
-        } catch (e) {
-            // Audio not available
-        }
-    }
-
-    // Start ragdoll effect on crash - EXPLODE INTO PIECES!
+    // =====================================================================
+    // RAGDOLL
+    // =====================================================================
     startRagdoll() {
         if (this.isRagdolling) return;
-
         this.isRagdolling = true;
         this.ragdollTimer = this.ragdollDuration;
 
-        const crashIntensity = Math.max(1, this.currentSpeed / 15);
+        const crashSpeed = Math.abs(this.currentSpeed);
+        const crashIntensity = Math.max(1, crashSpeed / 15);
 
-        // Hide the main skier mesh
+        this.mesh.updateMatrixWorld(true);
+        this.detachSkis();
+        this.explodeBodyParts(crashIntensity);
+        this.createHeadSnowball(crashIntensity);
         this.mesh.visible = false;
 
-        // Detach skis
-        this.detachSkis();
-
-        // EXPLODE ALL BODY PARTS!
-        this.explodeBodyParts(crashIntensity);
-
-        // Create the controllable head snowball
-        this.createHeadSnowball(crashIntensity);
-
-        // Stop all trick states
         this.isFlipping = false;
         this.isSpinning = false;
         this.flipRotation = 0;
         this.spinRotation = 0;
+
+        this._addTrauma(0.9);
+        this.sprayBurst(this.position.x, this.position.y, this.position.z, 60, 1.4, 0.4);
+
+        events.emit('ski:crash', { name: this._pendingCrashName || null, speed: crashSpeed });
+        this._pendingCrashName = null;
     }
 
-    // Explode all body parts into separate physics objects
     explodeBodyParts(intensity) {
-        // Clear existing
-        this.detachedBodyParts.forEach(part => {
-            this.scene.remove(part.mesh);
-        });
+        this.detachedBodyParts.forEach((part) => this.scene.remove(part.mesh));
         this.detachedBodyParts = [];
 
-        const skinMaterial = new THREE.MeshStandardMaterial({ color: 0xffcc99, roughness: 0.9 });
-        const jacketMaterial = new THREE.MeshStandardMaterial({ color: 0x1565c0, roughness: 0.7 });
-        const pantsMaterial = new THREE.MeshStandardMaterial({ color: 0x212121, roughness: 0.8 });
-        const bootMaterial = new THREE.MeshStandardMaterial({ color: 0x37474f, roughness: 0.5 });
-        const poleMaterial = new THREE.MeshStandardMaterial({ color: 0x263238, roughness: 0.3, metalness: 0.7 });
-        const gloveMaterial = new THREE.MeshStandardMaterial({ color: 0x1a1a1a, roughness: 0.8 });
+        for (const src of this._explodeMeshes) {
+            const m = new THREE.Mesh(src.geometry, src.material);
+            src.matrixWorld.decompose(m.position, m.quaternion, m.scale);
+            m.castShadow = true;
+            if (!src.geometry.boundingSphere) src.geometry.computeBoundingSphere();
+            const r = src.geometry.boundingSphere.radius;
+            const mass = Math.max(0.2, r * 6);
 
-        // Define body parts to explode
-        const parts = [
-            // Torso
-            { geo: new THREE.CapsuleGeometry(0.22, 0.45, 8, 12), mat: jacketMaterial, offset: [0, 1.05, 0], mass: 3 },
-            // Arms
-            { geo: new THREE.CapsuleGeometry(0.055, 0.2, 6, 8), mat: jacketMaterial, offset: [-0.24, 0.95, 0.05], mass: 0.5 },
-            { geo: new THREE.CapsuleGeometry(0.055, 0.2, 6, 8), mat: jacketMaterial, offset: [0.24, 0.95, 0.05], mass: 0.5 },
-            { geo: new THREE.CapsuleGeometry(0.045, 0.18, 6, 8), mat: jacketMaterial, offset: [-0.32, 0.72, 0.22], mass: 0.4 },
-            { geo: new THREE.CapsuleGeometry(0.045, 0.18, 6, 8), mat: jacketMaterial, offset: [0.32, 0.72, 0.22], mass: 0.4 },
-            // Gloves
-            { geo: new THREE.SphereGeometry(0.05, 8, 6), mat: gloveMaterial, offset: [-0.28, 0.58, 0.42], mass: 0.2 },
-            { geo: new THREE.SphereGeometry(0.05, 8, 6), mat: gloveMaterial, offset: [0.28, 0.58, 0.42], mass: 0.2 },
-            // Legs
-            { geo: new THREE.CapsuleGeometry(0.09, 0.25, 6, 8), mat: pantsMaterial, offset: [-0.12, 0.62, 0.08], mass: 1 },
-            { geo: new THREE.CapsuleGeometry(0.09, 0.25, 6, 8), mat: pantsMaterial, offset: [0.12, 0.62, 0.08], mass: 1 },
-            { geo: new THREE.CapsuleGeometry(0.07, 0.22, 6, 8), mat: pantsMaterial, offset: [-0.14, 0.32, 0.18], mass: 0.8 },
-            { geo: new THREE.CapsuleGeometry(0.07, 0.22, 6, 8), mat: pantsMaterial, offset: [0.14, 0.32, 0.18], mass: 0.8 },
-            // Boots
-            { geo: new THREE.BoxGeometry(0.12, 0.14, 0.28), mat: bootMaterial, offset: [-0.15, 0.1, 0.22], mass: 0.6 },
-            { geo: new THREE.BoxGeometry(0.12, 0.14, 0.28), mat: bootMaterial, offset: [0.15, 0.1, 0.22], mass: 0.6 },
-            // Poles
-            { geo: new THREE.CylinderGeometry(0.012, 0.01, 1.1, 8), mat: poleMaterial, offset: [-0.28, 0.2, 0.1], mass: 0.3 },
-            { geo: new THREE.CylinderGeometry(0.012, 0.01, 1.1, 8), mat: poleMaterial, offset: [0.28, 0.2, 0.1], mass: 0.3 },
-        ];
-
-        parts.forEach(partDef => {
-            const mesh = new THREE.Mesh(partDef.geo, partDef.mat);
-
-            // World position based on skier position + offset
-            const worldPos = this.position.clone();
-            worldPos.x += partDef.offset[0];
-            worldPos.y += partDef.offset[1];
-            worldPos.z += partDef.offset[2];
-            mesh.position.copy(worldPos);
-
-            // Random explosion velocity
             const explosionForce = 8 + Math.random() * 12 * intensity;
             const velocity = new THREE.Vector3(
                 this.velocity.x * 0.5 + (Math.random() - 0.5) * explosionForce,
                 3 + Math.random() * 8 * intensity,
-                this.velocity.z * 0.5 + (Math.random() - 0.5) * explosionForce
-            );
-
-            // Lighter parts fly faster
-            velocity.multiplyScalar(1 / Math.sqrt(partDef.mass));
-
-            // Random crazy spin
+                this.velocity.z * 0.5 + (Math.random() - 0.5) * explosionForce,
+            ).multiplyScalar(1 / Math.sqrt(mass));
             const angularVel = new THREE.Vector3(
-                (Math.random() - 0.5) * 20,
-                (Math.random() - 0.5) * 20,
-                (Math.random() - 0.5) * 20
+                (Math.random() - 0.5) * 20, (Math.random() - 0.5) * 20, (Math.random() - 0.5) * 20,
             );
-
-            mesh.castShadow = true;
-            this.scene.add(mesh);
-
-            this.detachedBodyParts.push({
-                mesh,
-                velocity,
-                angularVel,
-                mass: partDef.mass
-            });
-        });
+            this.scene.add(m);
+            this.detachedBodyParts.push({ mesh: m, velocity, angularVel, mass, radius: Math.min(0.2, r) });
+        }
     }
 
-    // Create the controllable head that becomes a snowball
     createHeadSnowball(intensity) {
-        // Remove old snowball if exists
-        if (this.headSnowball) {
-            this.scene.remove(this.headSnowball.mesh);
+        if (this.headSnowball) this.scene.remove(this.headSnowball.mesh);
+
+        const group = new THREE.Group();
+        group.name = 'headSnowball';
+        for (const child of this._head.children) {
+            if (!child.isMesh) continue;
+            const m = new THREE.Mesh(child.geometry, child.material);
+            m.position.copy(child.position).y -= 0.08;
+            m.castShadow = child.castShadow;
+            group.add(m);
         }
+        const coating = new THREE.Mesh(getGeometries().snowball, getMaterials().snow);
+        coating.visible = false;
+        coating.castShadow = true;
+        group.add(coating);
 
-        // Create head with helmet and goggles
-        const headGroup = new THREE.Group();
+        this._head.getWorldPosition(group.position);
+        group.position.y += 0.08;
+        this._head.getWorldQuaternion(group.quaternion);
+        this.scene.add(group);
 
-        const skinMaterial = new THREE.MeshStandardMaterial({ color: 0xffcc99, roughness: 0.9 });
-        const helmetMaterial = new THREE.MeshStandardMaterial({ color: 0xd32f2f, roughness: 0.4 });
-        const gogglesMaterial = new THREE.MeshStandardMaterial({ color: 0x1a1a1a, roughness: 0.1, metalness: 0.8 });
-        const snowMaterial = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.8 });
-
-        // Head
-        const headGeo = new THREE.SphereGeometry(0.16, 12, 10);
-        const head = new THREE.Mesh(headGeo, skinMaterial);
-        headGroup.add(head);
-
-        // Helmet
-        const helmetGeo = new THREE.SphereGeometry(0.19, 12, 10, 0, Math.PI * 2, 0, Math.PI * 0.6);
-        const helmet = new THREE.Mesh(helmetGeo, helmetMaterial);
-        helmet.position.y = 0.04;
-        helmet.rotation.x = -0.1;
-        headGroup.add(helmet);
-
-        // Goggles
-        const gogglesGeo = new THREE.BoxGeometry(0.28, 0.08, 0.06);
-        const goggles = new THREE.Mesh(gogglesGeo, gogglesMaterial);
-        goggles.position.z = 0.14;
-        headGroup.add(goggles);
-
-        // Snow coating (will grow)
-        const snowGeo = new THREE.SphereGeometry(0.2, 16, 12);
-        const snowCoating = new THREE.Mesh(snowGeo, snowMaterial);
-        snowCoating.scale.set(1, 1, 1);
-        snowCoating.visible = false; // Starts invisible
-        headGroup.add(snowCoating);
-
-        // Position at head location
-        headGroup.position.copy(this.position);
-        headGroup.position.y += 1.52;
-
-        this.scene.add(headGroup);
-
-        // Initial velocity - head pops off but doesn't fly too high
         const velocity = new THREE.Vector3(
             this.velocity.x * 0.6 + (Math.random() - 0.5) * 4,
-            2 + Math.random() * 2 * intensity, // Lower initial pop
-            this.velocity.z * 0.6 + (Math.random() - 0.5) * 4
+            2 + Math.random() * 2 * intensity,
+            this.velocity.z * 0.6 + (Math.random() - 0.5) * 4,
         );
-
         this.headSnowball = {
-            mesh: headGroup,
-            velocity,
-            angularVel: new THREE.Vector3(0, 0, 0),
-            snowCoating,
-            size: 1,
-            distanceRolled: 0
+            mesh: group, velocity, angularVel: new THREE.Vector3(), snowCoating: coating, size: 1, distanceRolled: 0,
         };
-
         this.headSnowballSize = 1;
     }
 
-    // Detach skis from skier and give them physics
     detachSkis() {
-        // Clear any existing detached skis
-        this.detachedSkis.forEach(ski => {
-            this.scene.remove(ski.mesh);
-        });
+        this.detachedSkis.forEach((s) => this.scene.remove(s.mesh));
         this.detachedSkis = [];
 
-        // Hide skis on the skier model
-        this.skiMeshes.forEach(ski => {
-            ski.visible = false;
-        });
-
-        // Create detached ski objects
-        const skiMaterial = new THREE.MeshStandardMaterial({
-            color: 0xf4511e,
-            roughness: 0.3,
-            metalness: 0.4
-        });
-
-        [-1, 1].forEach((side, index) => {
-            const skiGroup = new THREE.Group();
-
-            // Main ski body
-            const skiGeometry = new THREE.BoxGeometry(0.1, 0.02, 1.9);
-            const ski = new THREE.Mesh(skiGeometry, skiMaterial);
-            ski.position.set(0, 0, 0.25);
-            skiGroup.add(ski);
-
-            // Ski tip
-            const tipGeometry = new THREE.BoxGeometry(0.1, 0.02, 0.2);
-            const tip = new THREE.Mesh(tipGeometry, skiMaterial);
-            tip.position.set(0, 0.025, 1.15);
-            tip.rotation.x = -0.5;
-            skiGroup.add(tip);
-
-            // Ski tail
-            const tailGeometry = new THREE.BoxGeometry(0.1, 0.02, 0.12);
-            const tail = new THREE.Mesh(tailGeometry, skiMaterial);
-            tail.position.set(0, 0.015, -0.72);
-            tail.rotation.x = 0.3;
-            skiGroup.add(tail);
-
-            // Position at skier's feet
-            const worldPos = this.position.clone();
-            worldPos.x += side * 0.15;
-            worldPos.y += 0.1;
-            skiGroup.position.copy(worldPos);
-            skiGroup.rotation.y = this.rotation;
-
-            // Skis fly off dramatically based on crash speed
-            const crashIntensity = Math.max(1, this.currentSpeed / 15);
+        const crashIntensity = Math.max(1, Math.abs(this.currentSpeed) / 15);
+        this.skiMeshes.forEach((src, index) => {
+            const side = index === 0 ? 1 : -1;
+            const g = src.clone(true);
+            src.matrixWorld.decompose(g.position, g.quaternion, g.scale);
+            g.position.y += 0.05;
+            g.visible = true;
             const velocity = new THREE.Vector3(
                 this.velocity.x * 0.5 + side * (5 + Math.random() * 8) * crashIntensity,
                 4 + Math.random() * 8 * crashIntensity,
-                this.velocity.z * 0.5 + (Math.random() - 0.5) * 8 * crashIntensity
+                this.velocity.z * 0.5 + (Math.random() - 0.5) * 8 * crashIntensity,
             );
-
-            // Crazy spinning skis
             const angularVel = new THREE.Vector3(
                 (Math.random() - 0.5) * 20 * crashIntensity,
                 (Math.random() - 0.5) * 15 * crashIntensity,
-                (Math.random() - 0.5) * 20 * crashIntensity
+                (Math.random() - 0.5) * 20 * crashIntensity,
             );
-
-            this.scene.add(skiGroup);
-            this.detachedSkis.push({
-                mesh: skiGroup,
-                velocity: velocity,
-                angularVel: angularVel
-            });
+            this.scene.add(g);
+            this.detachedSkis.push({ mesh: g, velocity, angularVel });
+            src.visible = false;
         });
     }
 
-    // Update ragdoll physics - now with exploding parts and controllable head!
     updateRagdoll(delta) {
         if (!this.isRagdolling) return;
-
         const gravity = 20;
+        const spinDecay = frameMul(0.98, delta);
 
-        // Update all detached body parts
-        this.detachedBodyParts.forEach(part => {
+        for (const part of this.detachedBodyParts) {
             part.velocity.y -= gravity * delta;
-
-            part.mesh.position.x += part.velocity.x * delta;
-            part.mesh.position.y += part.velocity.y * delta;
-            part.mesh.position.z += part.velocity.z * delta;
-
-            // Ground collision
-            const terrainHeight = this.mountain.getHeightAt(part.mesh.position.x, part.mesh.position.z);
-            const partRadius = 0.2;
-            if (part.mesh.position.y < terrainHeight + partRadius) {
-                part.mesh.position.y = terrainHeight + partRadius;
-                part.velocity.y = Math.abs(part.velocity.y) * 0.4;
+            part.mesh.position.addScaledVector(part.velocity, delta);
+            const th = this.mountain.getHeightAt(part.mesh.position.x, part.mesh.position.z);
+            const pr = part.radius || 0.2;
+            if (part.mesh.position.y < th + pr) {
+                const hitSpeed = Math.abs(part.velocity.y);
+                part.mesh.position.y = th + pr;
+                part.velocity.y = hitSpeed * 0.4;
                 part.velocity.x *= 0.85;
                 part.velocity.z *= 0.85;
-
-                // Add spin on bounce
                 part.angularVel.x += part.velocity.z * 0.5;
                 part.angularVel.z -= part.velocity.x * 0.5;
+                if (hitSpeed > 4 && Math.random() < 0.5) {
+                    this.sprayBurst(part.mesh.position.x, th, part.mesh.position.z, 3, 0.4, 0);
+                }
             }
-
-            // Apply spin
             part.mesh.rotation.x += part.angularVel.x * delta;
             part.mesh.rotation.y += part.angularVel.y * delta;
             part.mesh.rotation.z += part.angularVel.z * delta;
+            part.angularVel.multiplyScalar(spinDecay);
+        }
 
-            part.angularVel.multiplyScalar(0.98);
-        });
-
-        // Update detached skis
-        this.detachedSkis.forEach(ski => {
+        for (const ski of this.detachedSkis) {
             ski.velocity.y -= gravity * delta;
-
-            ski.mesh.position.x += ski.velocity.x * delta;
-            ski.mesh.position.y += ski.velocity.y * delta;
-            ski.mesh.position.z += ski.velocity.z * delta;
-
-            const skiTerrainHeight = this.mountain.getHeightAt(ski.mesh.position.x, ski.mesh.position.z);
-            if (ski.mesh.position.y < skiTerrainHeight + 0.05) {
-                ski.mesh.position.y = skiTerrainHeight + 0.05;
+            ski.mesh.position.addScaledVector(ski.velocity, delta);
+            const th = this.mountain.getHeightAt(ski.mesh.position.x, ski.mesh.position.z);
+            if (ski.mesh.position.y < th + 0.05) {
+                ski.mesh.position.y = th + 0.05;
                 ski.velocity.y = Math.abs(ski.velocity.y) * 0.3;
                 ski.velocity.x *= 0.85;
                 ski.velocity.z *= 0.85;
             }
-
             ski.mesh.rotation.x += ski.angularVel.x * delta;
             ski.mesh.rotation.y += ski.angularVel.y * delta;
             ski.mesh.rotation.z += ski.angularVel.z * delta;
-            ski.angularVel.multiplyScalar(0.98);
-        });
+            ski.angularVel.multiplyScalar(spinDecay);
+        }
 
-        // UPDATE THE CONTROLLABLE HEAD SNOWBALL!
-        if (this.headSnowball) {
-            const head = this.headSnowball;
-
-            // Ground collision - head rolls!
-            const terrainHeight = this.mountain.getHeightAt(head.mesh.position.x, head.mesh.position.z);
+        const head = this.headSnowball;
+        if (head) {
+            const hp = head.mesh.position;
+            const terrainHeight = this.mountain.getHeightAt(hp.x, hp.z);
             const headRadius = 0.2 * head.size;
-            const isOnGround = head.mesh.position.y <= terrainHeight + headRadius + 0.1;
+            const isOnGround = hp.y <= terrainHeight + headRadius + 0.1;
+            const normal = this._sampleNormal(hp.x, hp.z, _v2);
 
-            // Get slope direction for natural rolling
-            const normal = this.mountain.getNormalAt(head.mesh.position.x, head.mesh.position.z);
-            const slopeDir = new THREE.Vector3(normal.x, 0, normal.z);
-
-            // Player can steer the head with A/D - much stronger control
-            // Steer perpendicular to movement direction
             const steerForce = isOnGround ? 25 : 5;
             const moveAngle = Math.atan2(head.velocity.x, head.velocity.z);
             if (this.input.left) {
-                // Steer left (perpendicular to movement)
                 head.velocity.x += Math.cos(moveAngle) * steerForce * delta;
                 head.velocity.z -= Math.sin(moveAngle) * steerForce * delta;
             }
             if (this.input.right) {
-                // Steer right (perpendicular to movement)
                 head.velocity.x -= Math.cos(moveAngle) * steerForce * delta;
                 head.velocity.z += Math.sin(moveAngle) * steerForce * delta;
             }
 
-            // Gravity
             head.velocity.y -= gravity * delta;
-
-            // STRONG downhill force when on ground - naturally rolls down
             if (isOnGround) {
-                const downhillForce = 35; // Strong gravity pull downhill
-                head.velocity.x += normal.x * downhillForce * delta;
-                head.velocity.z += normal.z * downhillForce * delta;
+                head.velocity.x += normal.x * 35 * delta;
+                head.velocity.z += normal.z * 35 * delta;
             }
 
-            // Move head
-            head.mesh.position.x += head.velocity.x * delta;
-            head.mesh.position.y += head.velocity.y * delta;
-            head.mesh.position.z += head.velocity.z * delta;
+            hp.addScaledVector(head.velocity, delta);
 
-            if (head.mesh.position.y < terrainHeight + headRadius) {
-                head.mesh.position.y = terrainHeight + headRadius;
-
-                // No bounce - just roll
+            if (hp.y < terrainHeight + headRadius) {
+                hp.y = terrainHeight + headRadius;
                 head.velocity.y = 0;
+                const roll = frameMul(0.995, delta);
+                head.velocity.x *= roll;
+                head.velocity.z *= roll;
 
-                // Very light rolling friction so it keeps going
-                head.velocity.x *= 0.995;
-                head.velocity.z *= 0.995;
-
-                // Calculate rolling angular velocity from movement
                 const speed = Math.sqrt(head.velocity.x * head.velocity.x + head.velocity.z * head.velocity.z);
                 head.angularVel.x = head.velocity.z / headRadius * 0.8;
                 head.angularVel.z = -head.velocity.x / headRadius * 0.8;
 
-                // SNOWBALL GROWS as it rolls on ground!
                 head.distanceRolled += speed * delta;
-                const growthRate = 0.12; // How fast it grows
-                const newSize = 1 + head.distanceRolled * growthRate;
-
+                const newSize = 1 + head.distanceRolled * 0.12;
                 if (newSize > head.size) {
-                    head.size = Math.min(newSize, 8); // Cap at 8x size
+                    head.size = Math.min(newSize, 8);
                     head.mesh.scale.setScalar(head.size);
-
-                    // Show snow coating once it starts growing
-                    if (head.size > 1.2 && head.snowCoating) {
+                    if (head.size > 1.15 && head.snowCoating) {
                         head.snowCoating.visible = true;
-                        head.snowCoating.scale.setScalar(head.size * 0.9);
+                        head.snowCoating.scale.setScalar(THREE.MathUtils.lerp(0.92, 1.08, clamp01((head.size - 1.15) / 0.8)));
                     }
+                }
+                // little puffs kicked up by the rolling ball
+                if (speed > 6 && Math.random() < delta * 20) {
+                    this.sprayBurst(hp.x, terrainHeight, hp.z, 2, 0.3 + head.size * 0.08, 0.2);
                 }
             }
 
-            // Apply rolling rotation
             head.mesh.rotation.x += head.angularVel.x * delta;
             head.mesh.rotation.z += head.angularVel.z * delta;
 
-            // Check for tree collisions - big snowball knocks them down!
-            if (head.size >= 2) {
-                this.checkSnowballTreeCollision(head);
-            }
+            if (head.size >= 2) this.checkSnowballTreeCollision(head);
 
-            // Update position reference for camera (smooth it)
-            this.position.lerp(head.mesh.position, 0.3);
+            const k = 1 - Math.exp(-20 * delta);
+            this.position.lerp(hp, k);
         }
     }
 
-    // Check if snowball hits trees and knock them down
     checkSnowballTreeCollision(head) {
         const snowballRadius = head.size * 0.5;
-        const snowballPos = head.mesh.position;
+        const sp = head.mesh.position;
 
-        // Check instanced trees via Trees.treeData
         if (this.trees && this.trees.treeData) {
-            for (const entry of this.trees.treeData) {
-                if (entry.knockedDown) continue;
-
-                const dx = snowballPos.x - entry.position.x;
-                const dz = snowballPos.z - entry.position.z;
-                const distance = Math.sqrt(dx * dx + dz * dz);
-
-                const treeRadius = 0.5 * entry.scale;
-                if (distance < snowballRadius + treeRadius) {
-                    // Mark instanced tree as knocked down and hide it
+            const data = this.trees.treeData;
+            for (let i = 0; i < data.length; i++) {
+                const entry = data[i];
+                if (entry.knockedDown || entry.culled) continue;
+                const dx = sp.x - entry.position.x;
+                const dz = sp.z - entry.position.z;
+                const reach = snowballRadius + (entry.radius ?? 0.5 * entry.scale);
+                if (dx * dx + dz * dz < reach * reach) {
                     entry.knockedDown = true;
                     this.trees.hideInstance(entry);
-
-                    // Spawn a standalone mesh for fall animation
                     const fallTree = this.trees.createFallbackTree(entry);
-                    this.knockDownTree(fallTree, head);
+                    if (fallTree) this.knockDownTree(fallTree, head);
                 }
             }
         }
 
-        // Also check any standalone trees (manually placed)
-        this.scene.traverse(obj => {
-            if (obj.userData && obj.userData.isTree && !obj.userData.knockedDown) {
-                const treePos = obj.position;
-                const dx = snowballPos.x - treePos.x;
-                const dz = snowballPos.z - treePos.z;
-                const distance = Math.sqrt(dx * dx + dz * dz);
-
-                const treeRadius = 0.5;
-                if (distance < snowballRadius + treeRadius) {
-                    this.knockDownTree(obj, head);
-                }
+        // Standalone (manually placed) trees
+        const placed = this.objectPlacer && this.objectPlacer.placedObjects;
+        if (placed) {
+            for (let i = 0; i < placed.length; i++) {
+                const e = placed[i];
+                const obj = e && e.object;
+                if (!obj || !obj.parent) continue;
+                if (!(e.type === 'pine-tree' || obj.userData.isTree)) continue;
+                this._tryKnockStandalone(obj, sp, snowballRadius, head);
             }
-        });
+        } else {
+            for (const obj of this._collidables()) {
+                const o = obj.object;
+                if (o && o.userData.isTree) this._tryKnockStandalone(o, sp, snowballRadius, head);
+            }
+        }
     }
 
-    // Animate tree falling over
+    _tryKnockStandalone(obj, sp, snowballRadius, head) {
+        if (obj.userData.knockedDown) return;
+        const dx = sp.x - obj.position.x;
+        const dz = sp.z - obj.position.z;
+        const reach = snowballRadius + (obj.userData.collisionRadius ?? 0.5 * (obj.scale.x || 1));
+        if (dx * dx + dz * dz < reach * reach) this.knockDownTree(obj, head);
+    }
+
     knockDownTree(tree, head) {
         tree.userData.knockedDown = true;
+        const fallDir = _v2.set(head.velocity.x, 0, head.velocity.z);
+        if (fallDir.lengthSq() > 0.01) fallDir.normalize(); else fallDir.set(0, 0, 1);
 
-        // Calculate fall direction (same direction snowball is moving)
-        const fallDir = new THREE.Vector3(
-            head.velocity.x,
-            0,
-            head.velocity.z
-        );
+        this._fallingTrees.push({
+            tree,
+            axis: new THREE.Vector3(-fallDir.z, 0, fallDir.x),
+            baseQuat: tree.quaternion.clone(),
+            originalY: tree.position.y,
+            angle: 0,
+            angVel: 0.6 + Math.random() * 0.4,
+            done: false,
+        });
 
-        if (fallDir.length() > 0.1) {
-            fallDir.normalize();
-        } else {
-            fallDir.set(0, 0, 1); // Default direction if not moving
-        }
+        head.velocity.x += fallDir.x * 2;
+        head.velocity.z += fallDir.z * 2;
 
-        // Store original position for animation
-        const originalY = tree.position.y;
-        tree.userData.fallAngle = 0;
-        tree.userData.fallSpeed = 3 + Math.random() * 2;
-
-        // The rotation axis is PERPENDICULAR to the fall direction
-        // If falling in direction (dx, 0, dz), rotate around axis (-dz, 0, dx)
-        const rotationAxis = new THREE.Vector3(-fallDir.z, 0, fallDir.x);
-
-        // Animate the fall
-        const animateFall = () => {
-            if (tree.userData.fallAngle < Math.PI / 2) {
-                tree.userData.fallAngle += tree.userData.fallSpeed * 0.016;
-
-                // Use setRotationFromAxisAngle for correct rotation
-                tree.setRotationFromAxisAngle(rotationAxis, tree.userData.fallAngle);
-
-                // Sink into ground as it falls
-                tree.position.y = originalY - tree.userData.fallAngle * 0.5;
-
-                requestAnimationFrame(animateFall);
-            }
-        };
-
-        animateFall();
-
-        // Add some speed boost to snowball for satisfying impact
-        const impactBoost = 2;
-        head.velocity.x += fallDir.x * impactBoost;
-        head.velocity.z += fallDir.z * impactBoost;
+        this._addTrauma(0.18);
+        this.sprayBurst(tree.position.x, tree.position.y, tree.position.z, 22, 1.0, 0);
+        events.emit('ski:tree-knock', { x: tree.position.x, y: tree.position.y, z: tree.position.z });
     }
 
-    // Recover from ragdoll and get back up
-    recoverFromRagdoll() {
-        this.isRagdolling = false;
-        this.crashHintCount++;
-
-        // Remove detached body parts
-        this.detachedBodyParts.forEach(part => {
-            this.scene.remove(part.mesh);
-        });
-        this.detachedBodyParts = [];
-
-        // Remove detached skis
-        this.detachedSkis.forEach(ski => {
-            this.scene.remove(ski.mesh);
-        });
-        this.detachedSkis = [];
-
-        // Remove head snowball
-        if (this.headSnowball) {
-            // Use snowball position as respawn point
-            this.position.copy(this.headSnowball.mesh.position);
-            this.scene.remove(this.headSnowball.mesh);
-            this.headSnowball = null;
+    _updateFallingTrees(delta) {
+        if (this._fallingTrees.length === 0) return;
+        for (const f of this._fallingTrees) {
+            if (f.done) continue;
+            // accelerate like a toppling trunk, small bounce at the end
+            f.angVel += (2.5 + Math.sin(f.angle) * 9) * delta;
+            f.angle += f.angVel * delta;
+            if (f.angle >= Math.PI / 2) {
+                f.angle = Math.PI / 2;
+                if (f.angVel > 1.2) {
+                    f.angVel *= -0.22;
+                    this.sprayBurst(
+                        f.tree.position.x - f.axis.z * 4, f.originalY, f.tree.position.z + f.axis.x * 4, 10, 0.8, 0,
+                    );
+                } else {
+                    f.done = true;
+                }
+            }
+            _q1.setFromAxisAngle(f.axis, f.angle);
+            f.tree.quaternion.copy(f.baseQuat).premultiply(_q1);
+            f.tree.position.y = f.originalY - f.angle * 0.5;
         }
+        if (this._fallingTrees.every((f) => f.done)) this._fallingTrees.length = 0;
+    }
 
-        // Show skis on skier again
-        this.skiMeshes.forEach(ski => {
-            ski.visible = true;
-        });
+    _finishFallingTrees() {
+        for (const f of this._fallingTrees) {
+            if (f.done) continue;
+            _q1.setFromAxisAngle(f.axis, Math.PI / 2);
+            f.tree.quaternion.copy(f.baseQuat).premultiply(_q1);
+            f.tree.position.y = f.originalY - (Math.PI / 2) * 0.5;
+        }
+        this._fallingTrees.length = 0;
+    }
 
-        // Show the main skier mesh again
+    recoverFromRagdoll() {
+        this.crashHintCount++;
+        if (this.headSnowball) this.position.copy(this.headSnowball.mesh.position);
+        this._clearRagdoll();
+
+        this.skiMeshes.forEach((s) => { s.visible = true; });
         this.mesh.visible = true;
 
-        // Get proper terrain height
-        const terrainHeight = this.mountain.getHeightAt(this.position.x, this.position.z);
-        this.position.y = terrainHeight;
-
-        // Reset rotation to face downhill
-        const normal = this.mountain.getNormalAt(this.position.x, this.position.z);
-        this.rotation = Math.atan2(normal.x, normal.z);
-
-        // Reset mesh rotation and position
+        this.position.y = this.mountain.getHeightAt(this.position.x, this.position.z);
+        const n = this._sampleNormal(this.position.x, this.position.z, _v1);
+        this.rotation = Math.atan2(n.x, n.z);
         this.mesh.rotation.set(0, this.rotation, 0);
         this.mesh.position.copy(this.position);
 
-        // Reset physics
-        this.velocity.set(0, 0, 0);
-        this.verticalVelocity = 0;
-        this.currentSpeed = 0;
-        this.isGrounded = true;
-        this.isJumping = false;
-        this.edgeAngle = 0;
-        this.turnMomentum = 0;
-
-        // Reset body part positions
+        this._resetMotion();
         this.resetBodyParts();
-
-        // Reset snowball size for next crash
+        this.pose.squash = 0.6; // pop back up
         this.headSnowballSize = 1;
-    }
+        this.sprayBurst(this.position.x, this.position.y, this.position.z, 24, 0.7, 0);
 
-    // Reset body parts to default positions
-    resetBodyParts() {
-        if (this.bodyParts.torso) {
-            this.bodyParts.torso.rotation.set(0.25, 0, 0);
-            this.bodyParts.torso.position.set(0, 1.05, 0);
-        }
-        if (this.bodyParts.head) {
-            this.bodyParts.head.position.set(0, 1.52, 0.05);
-            this.bodyParts.head.rotation.set(0, 0, 0);
-        }
-        if (this.bodyParts.helmet) {
-            this.bodyParts.helmet.position.set(0, 1.56, 0.02);
-        }
-        if (this.bodyParts.goggles) {
-            this.bodyParts.goggles.position.set(0, 1.52, 0.16);
-        }
+        events.emit('ski:recover', {});
     }
 }

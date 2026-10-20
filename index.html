@@ -2,175 +2,341 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Alpine Dreams - Ski Resort Builder</title>
-    <link rel="stylesheet" href="styles/main.css">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="theme-color" content="#0E1726">
+    <meta name="description" content="Alpine Dreams: build your mountain, then ride it.">
+    <title>Alpine Dreams</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Quicksand:wght@400;500;600&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,800&family=Manrope:wght@400;500;600;700&family=Barlow+Condensed:ital,wght@0,600;0,700;1,700;1,800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="styles/main.css">
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230E1726'/%3E%3Ccircle cx='22' cy='10' r='3.5' fill='%23FFB36B'/%3E%3Cpath d='M3 26 13 10l5 8 3-4 8 12z' fill='%23F4F7FB'/%3E%3Cpath d='M3 26 13 10l2.5 4-3 2-2-1.5L6 22z' fill='%237CC4FF' opacity='.6'/%3E%3C/svg%3E">
 </head>
-<body>
-    <div id="app">
-        <canvas id="canvas"></canvas>
+<body class="title-open">
+    <!-- ============ Icon sprite (24x24, stroke currentColor) ============ -->
+    <svg xmlns="http://www.w3.org/2000/svg" style="display:none" aria-hidden="true">
+        <defs>
+            <symbol id="i-raise" viewBox="0 0 24 24"><path d="M2.5 20.5 9 10.5l4 5.5 2.2-3 6.3 7.5z"/><path d="M17.5 3v6.5M14.75 5.75 17.5 3l2.75 2.75"/></symbol>
+            <symbol id="i-lower" viewBox="0 0 24 24"><path d="M2.5 20.5 9 10.5l4 5.5 2.2-3 6.3 7.5z"/><path d="M17.5 3v6.5M14.75 6.75l2.75 2.75 2.75-2.75"/></symbol>
+            <symbol id="i-smooth" viewBox="0 0 24 24"><path d="M2.5 16c3.2-4.4 6.3-4.4 9.5 0s6.3 4.4 9.5 0"/><path d="M2.5 9c3.2-3 6.3-3 9.5 0s6.3 3 9.5 0" opacity=".55"/></symbol>
+            <symbol id="i-chairlift" viewBox="0 0 24 24"><path d="M2 6.5 22 3"/><path d="M12.5 4.8V11"/><path d="M8 11h9"/><path d="M8.5 11v4.5a1.5 1.5 0 0 0 1.5 1.5h7"/><path d="M17 17v3.5"/></symbol>
+            <symbol id="i-gondola" viewBox="0 0 24 24"><path d="M2 5.5 22 2.5"/><path d="M12 4v3.5"/><rect x="5.5" y="7.5" width="13" height="13" rx="3.5"/><path d="M5.5 13h13M12 13v7.5"/></symbol>
+            <symbol id="i-lodge" viewBox="0 0 24 24"><path d="M2.5 11.5 12 3.5l9.5 8"/><path d="M5 9.5V20.5h14V9.5"/><path d="M10 20.5V15h4v5.5"/><path d="M16 6.2V3.5h2.5v4.8"/></symbol>
+            <symbol id="i-pine" viewBox="0 0 24 24"><path d="M12 2.5 7.5 9h3l-4.5 6h4l-4 5h12l-4-5h4l-4.5-6h3z"/><path d="M12 20v2"/></symbol>
+            <symbol id="i-flag" viewBox="0 0 24 24"><path d="M6 21.5V3"/><path d="M6 4h12l-3.2 4.2L18 12.5H6"/><path d="M3.5 21.5h5"/></symbol>
+            <symbol id="i-snowman" viewBox="0 0 24 24"><circle cx="12" cy="7" r="3.2"/><circle cx="12" cy="16" r="5"/><path d="M7.5 12.5 4 10.5M16.5 12.5l3.5-2"/><path d="M9.5 3.8h5"/></symbol>
+            <symbol id="i-jump" viewBox="0 0 24 24"><path d="M2 19.5h6.5c5.5 0 9.5-3 12.5-9"/><path d="M21 10.5v9H2"/><path d="M14 5.5l2-2M17.5 6.5l1.5-2.5M11 6l1-2.5" opacity=".7"/></symbol>
+            <symbol id="i-skier" viewBox="0 0 24 24"><circle cx="15.5" cy="4.5" r="2"/><path d="M9 9.2 13.2 7.5l3 3-2.7 2.8 3 3.7"/><path d="M13.2 7.5 10.8 13l-3.3 2"/><path d="M3 16.5l17 4.5"/><path d="M6 10.5 4.5 16.8"/></symbol>
+            <symbol id="i-sparkle" viewBox="0 0 24 24"><path d="M11 3.5c.7 4.6 2.9 6.8 7.5 7.5-4.6.7-6.8 2.9-7.5 7.5-.7-4.6-2.9-6.8-7.5-7.5 4.6-.7 6.8-2.9 7.5-7.5z"/><path d="M19 2.5v4M17 4.5h4M19 17v3M17.5 18.5h3"/></symbol>
+            <symbol id="i-park" viewBox="0 0 24 24"><path d="M2.5 20h5c4.5 0 7.5-2.5 9.5-7"/><path d="M17 13v7H2.5"/><path d="M12 7.5c2.5-3.5 6.5-4 9.5-1.5"/><path d="M21.5 2.8V6h-3.2"/></symbol>
+            <symbol id="i-mountain" viewBox="0 0 24 24"><path d="M2 20.5 9 8.5l4 6.5 3-4 6 9.5z"/><path d="M6.8 12.2 9 13.5l1.6-2.3"/><circle cx="18" cy="5" r="2"/></symbol>
+            <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16"/><path d="M9.5 7V4.5h5V7"/><path d="M5.8 7l1 13.5h10.4l1-13.5"/><path d="M10 11v6M14 11v6"/></symbol>
+            <symbol id="i-camera" viewBox="0 0 24 24"><path d="M3.5 8.5h3.2l1.8-3h7l1.8 3h3.2v11h-17z"/><circle cx="12" cy="13.5" r="3.5"/></symbol>
+            <symbol id="i-snowflake" viewBox="0 0 24 24"><path d="M12 2.5v19M3.8 7.25l16.4 9.5M20.2 7.25 3.8 16.75"/><path d="M9.5 4 12 6.5 14.5 4M9.5 20 12 17.5l2.5 2.5M4 10.5l3.3-.9-.9-3.3M20 13.5l-3.3.9.9 3.3M4 13.5l3.3.9-.9 3.3M20 10.5l-3.3-.9.9-3.3"/></symbol>
+            <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 14.6A8.5 8.5 0 1 1 9.4 4a6.8 6.8 0 0 0 10.6 10.6z"/><path d="M17 3.5v2.5M15.75 4.75h2.5" opacity=".7"/></symbol>
+            <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M4.6 4.6 6 6M18 18l1.4 1.4M2.5 12h2M19.5 12h2M4.6 19.4 6 18M18 6l1.4-1.4"/></symbol>
+            <symbol id="i-wind" viewBox="0 0 24 24"><path d="M3 8.5h10.5a3 3 0 1 0-3-3"/><path d="M3 12.5h15a3 3 0 1 1-3 3"/><path d="M3 16.5h6.5"/></symbol>
+            <symbol id="i-music" viewBox="0 0 24 24"><path d="M9 18V5.5l11-2V16"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="17.5" cy="16" r="2.5"/></symbol>
+            <symbol id="i-music-off" viewBox="0 0 24 24"><path d="M9 13.5V18M9 5.5l11-2V13"/><circle cx="6.5" cy="18" r="2.5"/><path d="M3 3l18 18"/></symbol>
+            <symbol id="i-next" viewBox="0 0 24 24"><path d="M5 5.5 14 12l-9 6.5z"/><path d="M18 5.5v13"/></symbol>
+            <symbol id="i-speaker" viewBox="0 0 24 24"><path d="M3.5 9h4l5-4v14l-5-4h-4z"/><path d="M16 8.5a5 5 0 0 1 0 7M18.6 6a8.6 8.6 0 0 1 0 12"/></symbol>
+            <symbol id="i-speaker-off" viewBox="0 0 24 24"><path d="M3.5 9h4l5-4v14l-5-4h-4z"/><path d="M16.5 9.5l5 5M21.5 9.5l-5 5"/></symbol>
+            <symbol id="i-close" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></symbol>
+            <symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.6 9.4a2.5 2.5 0 1 1 3.4 2.4c-.7.3-1 .8-1 1.6v.4"/><path d="M12 17.1h.01"/></symbol>
+            <symbol id="i-gear" viewBox="0 0 24 24"><path d="M4 6h9M18 6h2M4 12h3M12 12h8M4 18h11M20 18h0"/><circle cx="15.5" cy="6" r="2.2"/><circle cx="9.5" cy="12" r="2.2"/><circle cx="17.5" cy="18" r="2.2"/></symbol>
+            <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5 10 17.5 19.5 7"/></symbol>
+            <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 3.5 2.5 20h19z"/><path d="M12 10v4.5M12 17.2h.01"/></symbol>
+            <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5.5M12 7.8h.01"/></symbol>
+            <symbol id="i-play" viewBox="0 0 24 24"><path d="M7 4.5 19 12 7 19.5z"/></symbol>
+            <symbol id="i-hammer" viewBox="0 0 24 24"><path d="M14.5 4.5 19.5 9.5 17 12l-5-5z"/><path d="M12 7 3.5 15.5a2.1 2.1 0 0 0 3 3L15 10"/><path d="M14.5 4.5 13 3"/></symbol>
+            <symbol id="i-brush" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="2" fill="currentColor"/></symbol>
+            <symbol id="i-eye-off" viewBox="0 0 24 24"><path d="M3 3l18 18"/><path d="M10.6 5.6A9.7 9.7 0 0 1 12 5.5c5 0 8.5 4.2 9.5 6.5-.4 1-1.3 2.4-2.6 3.7M6.3 7.3C4.4 8.6 3.1 10.4 2.5 12c1 2.3 4.5 6.5 9.5 6.5 1.5 0 2.9-.4 4.1-1"/><path d="M9.9 10a3 3 0 0 0 4.1 4.1"/></symbol>
+            <symbol id="i-redo" viewBox="0 0 24 24"><path d="M20 7.5v5h-5"/><path d="M19.6 12.4A8 8 0 1 1 17.5 6.5"/></symbol>
+            <symbol id="i-logo" viewBox="0 0 32 32"><circle cx="22.5" cy="9.5" r="3.4" fill="var(--accent-warm, #FFB36B)" stroke="none"/><path d="M2.5 26.5 12.5 10l5.2 8.2 3.3-4.4 8.5 12.7z" fill="currentColor" stroke="none"/><path d="M12.5 10 15.4 14.6l-2.7 1.6-2-1.7-2.6 2.9z" fill="var(--accent, #7CC4FF)" stroke="none" opacity=".85"/></symbol>
+        </defs>
+    </svg>
 
-        <!-- Minimal UI Overlay -->
+    <div id="app">
+        <canvas id="canvas" aria-label="Alpine Dreams 3D view"></canvas>
+
+        <!-- ================= UI overlay (pointer-events: none, children auto) ================= -->
         <div id="ui-overlay">
-            <!-- Title -->
-            <div id="title-bar">
-                <h1>🏔️ Alpine Dreams</h1>
-                <span class="subtitle">Ski Resort Builder</span>
+
+            <!-- Wordmark -->
+            <header id="title-bar" class="glass chrome">
+                <svg class="logo" aria-hidden="true"><use href="#i-logo"/></svg>
+                <div class="wordmark">
+                    <h1>Alpine Dreams</h1>
+                    <span class="subtitle">Resort Builder</span>
+                </div>
+            </header>
+
+            <!-- Mode chip (top center) -->
+            <div id="mode-indicator" class="glass hidden" role="status" aria-live="polite">
+                <span class="mode-icon" aria-hidden="true"><svg><use href="#i-hammer"/></svg></span>
+                <span class="mode-body">
+                    <span class="mode-text">Placing: Ski Lift</span>
+                    <span class="mode-sub"></span>
+                </span>
+                <span class="mode-brush hidden" title="Brush size ([ and ])">
+                    <svg aria-hidden="true"><use href="#i-brush"/></svg>
+                    <input type="range" id="brush-size" min="40" max="400" step="10" value="150" aria-label="Brush size">
+                </span>
+                <kbd class="mode-esc">Esc</kbd>
+                <button id="cancel-placement" class="icon-btn small" aria-label="Cancel (Esc)" data-tip="Cancel" data-key="Esc"><svg><use href="#i-close"/></svg></button>
             </div>
 
-            <!-- Object Palette -->
-            <div id="object-palette">
-                <div class="palette-section">
+            <!-- Toasts (top center, below the mode chip) -->
+            <div id="toast-region" aria-live="polite" aria-atomic="false"></div>
+
+            <!-- Top-right: actions + environment -->
+            <div id="top-right" class="chrome">
+                <div id="quick-actions" class="glass cluster" role="toolbar" aria-label="Resort actions">
+                    <button id="btn-random" class="icon-btn" aria-label="Auto-generate resort" data-tip="Auto-generate resort"><svg><use href="#i-sparkle"/></svg></button>
+                    <button id="btn-trick-park" class="icon-btn" aria-label="Generate trick park" data-tip="Build a trick park"><svg><use href="#i-park"/></svg></button>
+                    <button id="btn-new-terrain" class="icon-btn" aria-label="New terrain" data-tip="New terrain"><svg><use href="#i-mountain"/></svg></button>
+                    <button id="btn-clear" class="icon-btn danger" aria-label="Clear all objects" data-tip="Clear all objects" aria-haspopup="dialog"><svg><use href="#i-trash"/></svg></button>
+                    <span class="sep" aria-hidden="true"></span>
+                    <button id="btn-screenshot" class="icon-btn" aria-label="Take screenshot" data-tip="Screenshot"><svg><use href="#i-camera"/></svg></button>
+                </div>
+                <div id="env-toggles" class="glass cluster" role="toolbar" aria-label="Environment">
+                    <button id="btn-toggle-snow" class="icon-btn toggle" aria-pressed="true" aria-label="Toggle snowfall" data-tip="Snowfall"><svg><use href="#i-snowflake"/></svg></button>
+                    <button id="btn-toggle-night" class="icon-btn toggle" aria-pressed="false" aria-label="Toggle night" data-tip="Night" data-key="N"><svg><use href="#i-moon"/></svg></button>
+                    <button id="btn-toggle-blizzard" class="icon-btn toggle" aria-pressed="false" aria-label="Toggle blizzard" data-tip="Blizzard" data-key="M"><svg><use href="#i-wind"/></svg></button>
+                    <span class="sep" aria-hidden="true"></span>
+                    <button id="btn-settings" class="icon-btn" aria-label="Settings" data-tip="Settings" aria-haspopup="dialog" aria-expanded="false"><svg><use href="#i-gear"/></svg></button>
+                    <button id="btn-help" class="icon-btn" aria-label="Keyboard shortcuts" data-tip="Shortcuts" data-key="?"><svg><use href="#i-help"/></svg></button>
+                </div>
+            </div>
+
+            <!-- Settings popover -->
+            <div id="settings-popover" class="glass popover hidden" role="dialog" aria-label="Settings">
+                <div class="pop-title">Graphics quality</div>
+                <div class="segmented" role="radiogroup" aria-label="Graphics quality">
+                    <button role="radio" data-quality="low" aria-checked="false">Low</button>
+                    <button role="radio" data-quality="medium" aria-checked="false">Medium</button>
+                    <button role="radio" data-quality="high" aria-checked="false">High</button>
+                </div>
+                <p class="pop-note">Lower tiers drop post-processing and particles. Quality steps down automatically if the frame rate struggles.</p>
+                <div class="pop-row">
+                    <button id="btn-photo-mode" class="text-btn"><svg><use href="#i-eye-off"/></svg>Photo mode <kbd>H</kbd></button>
+                </div>
+            </div>
+
+            <!-- Clear confirm popover -->
+            <div id="confirm-popover" class="glass popover hidden" role="alertdialog" aria-labelledby="confirm-title" aria-describedby="confirm-desc">
+                <div id="confirm-title" class="pop-title">Clear the resort?</div>
+                <p id="confirm-desc" class="pop-note">Removes every lift, lodge and decoration you placed. The terrain and forest stay.</p>
+                <div class="pop-actions">
+                    <button id="confirm-cancel" class="text-btn">Keep it</button>
+                    <button id="confirm-ok" class="text-btn danger-fill">Clear all</button>
+                </div>
+            </div>
+
+            <!-- Contextual hint (above the dock) -->
+            <div id="controls-hint" class="chrome" aria-live="off"></div>
+
+            <!-- Tool dock (bottom center) -->
+            <nav id="object-palette" class="glass dock chrome" aria-label="Tools">
+                <div class="palette-section" role="group" aria-label="Terrain">
                     <div class="palette-title">Terrain</div>
                     <div class="palette-items">
-                        <button class="palette-item" data-sculpt="raise" title="Raise Terrain">
-                            <span class="icon">⬆️</span>
-                            <span class="label">Raise</span>
-                        </button>
-                        <button class="palette-item" data-sculpt="lower" title="Lower Terrain">
-                            <span class="icon">⬇️</span>
-                            <span class="label">Lower</span>
-                        </button>
-                        <button class="palette-item" data-sculpt="smooth" title="Smooth Terrain">
-                            <span class="icon">〰️</span>
-                            <span class="label">Smooth</span>
-                        </button>
+                        <button class="palette-item" data-sculpt="raise" aria-label="Raise terrain" data-tip="Raise terrain" data-key="Q"><svg><use href="#i-raise"/></svg><span class="label">Raise</span><kbd class="hk">Q</kbd></button>
+                        <button class="palette-item" data-sculpt="lower" aria-label="Lower terrain" data-tip="Lower terrain" data-key="W"><svg><use href="#i-lower"/></svg><span class="label">Lower</span><kbd class="hk">W</kbd></button>
+                        <button class="palette-item" data-sculpt="smooth" aria-label="Smooth terrain" data-tip="Smooth terrain" data-key="E"><svg><use href="#i-smooth"/></svg><span class="label">Smooth</span><kbd class="hk">E</kbd></button>
                     </div>
                 </div>
-
-                <div class="palette-divider"></div>
-
-                <div class="palette-section">
+                <div class="palette-divider" aria-hidden="true"></div>
+                <div class="palette-section" role="group" aria-label="Build">
                     <div class="palette-title">Build</div>
                     <div class="palette-items">
-                        <button class="palette-item" data-object="ski-lift" title="Ski Lift">
-                            <span class="icon">🚡</span>
-                            <span class="label">Lift</span>
-                        </button>
-                        <button class="palette-item" data-object="gondola" title="Gondola">
-                            <span class="icon">🚠</span>
-                            <span class="label">Gondola</span>
-                        </button>
-                        <button class="palette-item" data-object="lodge" title="Lodge">
-                            <span class="icon">🏠</span>
-                            <span class="label">Lodge</span>
-                        </button>
-                        <button class="palette-item" data-object="pine-tree" title="Pine Tree">
-                            <span class="icon">🌲</span>
-                            <span class="label">Tree</span>
-                        </button>
-                        <button class="palette-item" data-object="flag" title="Marker Flag">
-                            <span class="icon">🚩</span>
-                            <span class="label">Flag</span>
-                        </button>
-                        <button class="palette-item" data-object="snowman" title="Snowman">
-                            <span class="icon">⛄</span>
-                            <span class="label">Snowman</span>
-                        </button>
-                        <button class="palette-item" data-object="jump" title="Snow Jump">
-                            <span class="icon">🎿</span>
-                            <span class="label">Jump</span>
-                        </button>
+                        <button class="palette-item" data-object="ski-lift" aria-label="Chairlift" data-tip="Chairlift" data-key="1"><svg><use href="#i-chairlift"/></svg><span class="label">Lift</span><kbd class="hk">1</kbd></button>
+                        <button class="palette-item" data-object="gondola" aria-label="Gondola" data-tip="Gondola" data-key="2"><svg><use href="#i-gondola"/></svg><span class="label">Gondola</span><kbd class="hk">2</kbd></button>
+                        <button class="palette-item" data-object="lodge" aria-label="Lodge" data-tip="Lodge" data-key="3"><svg><use href="#i-lodge"/></svg><span class="label">Lodge</span><kbd class="hk">3</kbd></button>
+                        <button class="palette-item" data-object="pine-tree" aria-label="Pine tree" data-tip="Pine tree" data-key="4"><svg><use href="#i-pine"/></svg><span class="label">Tree</span><kbd class="hk">4</kbd></button>
+                        <button class="palette-item" data-object="flag" aria-label="Slalom flag" data-tip="Slalom flag" data-key="5"><svg><use href="#i-flag"/></svg><span class="label">Flag</span><kbd class="hk">5</kbd></button>
+                        <button class="palette-item" data-object="snowman" aria-label="Snowman" data-tip="Snowman" data-key="6"><svg><use href="#i-snowman"/></svg><span class="label">Snowman</span><kbd class="hk">6</kbd></button>
+                        <button class="palette-item" data-object="jump" aria-label="Kicker jump" data-tip="Kicker jump" data-key="8"><svg><use href="#i-jump"/></svg><span class="label">Jump</span><kbd class="hk">8</kbd></button>
                     </div>
                 </div>
-
-                <div class="palette-divider"></div>
-
-                <div class="palette-section">
-                    <div class="palette-title">Play</div>
+                <div class="palette-divider" aria-hidden="true"></div>
+                <div class="palette-section ride" role="group" aria-label="Ride">
+                    <div class="palette-title">Ride</div>
                     <div class="palette-items">
-                        <button class="palette-item skier-item" data-object="skier" title="Place Skier - Start Skiing!">
-                            <span class="icon">⛷️</span>
-                            <span class="label">Skier</span>
-                        </button>
+                        <button class="palette-item skier-item" data-object="skier" aria-label="Drop in a skier and ride" data-tip="Drop in and ride" data-key="7"><svg><use href="#i-skier"/></svg><span class="label">Ride</span><kbd class="hk">7</kbd></button>
                     </div>
                 </div>
+            </nav>
+
+            <!-- Audio (bottom right) -->
+            <div id="music-controls" class="glass cluster" role="toolbar" aria-label="Audio">
+                <button id="btn-toggle-music" class="icon-btn toggle" aria-pressed="true" aria-label="Music" data-tip="Music"><svg><use href="#i-music"/></svg></button>
+                <button id="btn-switch-track" class="icon-btn" aria-label="Next track" data-tip="Next track"><svg><use href="#i-next"/></svg></button>
+                <button id="btn-toggle-sfx" class="icon-btn toggle" aria-pressed="true" aria-label="Sound effects" data-tip="Sound effects"><svg><use href="#i-speaker"/></svg></button>
             </div>
 
-            <!-- Controls Hint -->
-            <div id="controls-hint">
-                <div class="hint"><kbd>Click</kbd> Place</div>
-                <div class="hint"><kbd>←→</kbd> Yaw</div>
-                <div class="hint"><kbd>↑↓</kbd> Pitch</div>
-                <div class="hint"><kbd>T</kbd> Reset rotation</div>
-                <div class="hint"><kbd>Del</kbd> Remove</div>
-                <div class="hint"><kbd>Scroll</kbd> Zoom</div>
-                <div class="hint"><kbd>N</kbd> Night</div>
-                <div class="hint"><kbd>M</kbd> Blizzard</div>
-            </div>
+            <!-- ================= Ski HUD (visible with body.is-skiing) ================= -->
+            <div id="skier-hud" aria-live="off">
+                <div class="esc-chip glass"><kbd>Esc</kbd><span>Exit run</span><kbd>R</kbd><span>Restart</span></div>
 
-            <!-- Mode Indicator -->
-            <div id="mode-indicator" class="hidden">
-                <span class="mode-text">Placing: Ski Lift</span>
-                <button id="cancel-placement" title="Cancel (Esc)">✕</button>
-            </div>
-
-            <!-- Quick Actions -->
-            <div id="quick-actions">
-                <button id="btn-clear" title="Clear All">🗑️</button>
-                <button id="btn-random" title="Auto-Generate Resort">✨</button>
-                <button id="btn-trick-park" title="Generate Trick Park">🎿</button>
-                <button id="btn-screenshot" title="Take Screenshot">📷</button>
-                <button id="btn-toggle-snow" title="Toggle Snow">❄️</button>
-                <button id="btn-new-terrain" title="New Terrain">🏔️</button>
-            </div>
-
-            <!-- Music Controls (bottom right, discrete) -->
-            <div id="music-controls">
-                <button id="btn-toggle-music" title="Mute/Unmute">🔊</button>
-                <button id="btn-switch-track" title="Switch Track">🎵</button>
-            </div>
-
-            <!-- Skier HUD (shown during ski mode) -->
-            <div id="skier-hud" class="hidden">
-                <!-- Score display (top center) -->
                 <div class="score-display">
+                    <div class="score-label">Score</div>
                     <div class="score-value"><span id="score-value">0</span></div>
-                    <div class="score-label">SCORE</div>
-                    <div class="combo-display hidden">
-                        <span id="combo-value">1.0x</span> COMBO
+                    <div class="combo-display hidden"><span id="combo-value">1.0x</span><span class="combo-word">combo</span></div>
+                </div>
+
+                <div class="speed-display glass">
+                    <svg class="gauge" viewBox="0 0 140 140" aria-hidden="true">
+                        <defs>
+                            <linearGradient id="gauge-grad" x1="0" y1="1" x2="1" y2="0">
+                                <stop offset="0" stop-color="#7CC4FF"/>
+                                <stop offset=".65" stop-color="#BFE3FF"/>
+                                <stop offset="1" stop-color="#FFB36B"/>
+                            </linearGradient>
+                        </defs>
+                        <circle class="gauge-track" cx="70" cy="70" r="58"/>
+                        <circle class="gauge-ticks" cx="70" cy="70" r="49"/>
+                        <circle class="gauge-fill" cx="70" cy="70" r="58"/>
+                    </svg>
+                    <div class="speed-readout">
+                        <span id="speed-value">0</span>
+                        <small>mph</small>
+                    </div>
+                    <div class="speed-flags">
+                        <span class="flag flag-tuck">Tuck</span>
+                        <span class="flag flag-brake">Brake</span>
+                        <span class="flag flag-switch">Switch</span>
                     </div>
                 </div>
 
-                <!-- Speed display (bottom left) -->
-                <div class="speed-display">
-                    <span id="speed-value">0</span> <small>mph</small>
+                <div class="stats-panel glass">
+                    <div class="stat-row"><span class="stat-label">Top speed</span><span class="stat-value"><span id="max-speed-value">0</span><small>mph</small></span></div>
+                    <div class="stat-row"><span class="stat-label">Air time</span><span class="stat-value"><span id="air-time-value">0.0</span><small>s</small></span></div>
+                    <div class="stat-row"><span class="stat-label">Tricks</span><span class="stat-value"><span id="tricks-value">0</span></span></div>
                 </div>
 
-                <!-- Stats panel (bottom right) -->
-                <div class="stats-panel">
-                    <div class="stat-row">
-                        <span class="stat-label">Max Speed</span>
-                        <span class="stat-value"><span id="max-speed-value">0</span> mph</span>
-                    </div>
-                    <div class="stat-row">
-                        <span class="stat-label">Air Time</span>
-                        <span class="stat-value"><span id="air-time-value">0.0</span>s</span>
-                    </div>
-                    <div class="stat-row">
-                        <span class="stat-label">Tricks</span>
-                        <span class="stat-value"><span id="tricks-value">0</span></span>
-                    </div>
+                <!-- legacy hook kept for compatibility; HUD now renders #trick-live -->
+                <div id="trick-status" class="hidden" aria-hidden="true"></div>
+
+                <div id="trick-live" aria-hidden="true">
+                    <svg class="ring" viewBox="0 0 64 64"><circle class="ring-track" cx="32" cy="32" r="27"/><circle class="ring-fill" cx="32" cy="32" r="27"/></svg>
+                    <span class="trick-live-label"></span>
                 </div>
 
-                <!-- Trick status (center) -->
-                <div id="trick-status" class="hidden"></div>
+                <div id="callouts" aria-live="polite"></div>
+                <div id="ski-prompt" class="hidden"></div>
 
-                <!-- Controls hint -->
-                <div class="controls-info">
-                    <kbd>A/D</kbd> Turn/Spin · <kbd>W</kbd> Tuck · <kbd>S</kbd> Brake · <kbd>Space</kbd> Jump · <kbd>W/S</kbd> Flip · <kbd>R</kbd> Reset
+                <div class="controls-info glass" id="ski-legend">
+                    <span><kbd>A</kbd><kbd>D</kbd> Carve / spin</span>
+                    <span><kbd>W</kbd> Tuck / front flip</span>
+                    <span><kbd>S</kbd> Brake / back flip</span>
+                    <span><kbd>Space</kbd> Jump</span>
+                    <span><kbd>?</kbd> Controls</span>
+                </div>
+            </div>
+            <div id="crash-vignette" aria-hidden="true"></div>
+
+            <!-- Run summary -->
+            <div id="run-summary" class="glass hidden" role="dialog" aria-labelledby="run-title">
+                <div class="run-head">
+                    <div id="run-title" class="run-title">Run complete</div>
+                    <button class="icon-btn small" id="run-close" aria-label="Close summary"><svg><use href="#i-close"/></svg></button>
+                </div>
+                <div class="run-score"><span id="run-score">0</span><small>points</small></div>
+                <div class="run-grid">
+                    <div><span id="run-maxspeed">0</span><small>top mph</small></div>
+                    <div><span id="run-air">0.0</span><small>sec air</small></div>
+                    <div><span id="run-tricks">0</span><small>tricks</small></div>
+                    <div><span id="run-combo">1.0x</span><small>best combo</small></div>
+                </div>
+                <div class="run-actions">
+                    <button id="run-again" class="text-btn accent-fill"><svg><use href="#i-redo"/></svg>Ride again</button>
+                </div>
+                <div class="run-timer"><span></span></div>
+            </div>
+
+            <div id="tooltip" role="tooltip" aria-hidden="true"></div>
+            <div id="shutter-flash" aria-hidden="true"></div>
+        </div>
+
+        <!-- ================= Shortcuts sheet ================= -->
+        <div id="shortcuts-sheet" class="sheet-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="sheet-title">
+            <div class="sheet glass">
+                <div class="sheet-head">
+                    <h2 id="sheet-title">Shortcuts</h2>
+                    <button class="icon-btn small" id="sheet-close" aria-label="Close shortcuts"><svg><use href="#i-close"/></svg></button>
+                </div>
+                <div class="sheet-cols">
+                    <section>
+                        <h3>Build</h3>
+                        <dl>
+                            <dt><kbd>1</kbd>&ndash;<kbd>6</kbd>, <kbd>8</kbd></dt><dd>Lift, gondola, lodge, tree, flag, snowman, jump</dd>
+                            <dt><kbd>Q</kbd><kbd>W</kbd><kbd>E</kbd></dt><dd>Raise, lower, smooth terrain</dd>
+                            <dt><kbd>[</kbd><kbd>]</kbd></dt><dd>Brush size</dd>
+                            <dt><kbd>&larr;</kbd><kbd>&rarr;</kbd></dt><dd>Rotate object</dd>
+                            <dt><kbd>&uarr;</kbd><kbd>&darr;</kbd></dt><dd>Tilt object</dd>
+                            <dt><kbd>T</kbd></dt><dd>Reset rotation</dd>
+                            <dt><kbd>Del</kbd></dt><dd>Remove selected</dd>
+                            <dt><kbd>Ctrl</kbd><kbd>Z</kbd></dt><dd>Undo last placement</dd>
+                            <dt><kbd>Esc</kbd></dt><dd>Cancel / deselect</dd>
+                        </dl>
+                    </section>
+                    <section>
+                        <h3>Ride</h3>
+                        <dl>
+                            <dt><kbd>7</kbd></dt><dd>Drop in a skier</dd>
+                            <dt><kbd>A</kbd><kbd>D</kbd></dt><dd>Carve, spin in the air</dd>
+                            <dt><kbd>W</kbd></dt><dd>Tuck, front flip in the air</dd>
+                            <dt><kbd>S</kbd></dt><dd>Brake, back flip in the air</dd>
+                            <dt><kbd>Space</kbd></dt><dd>Jump, get up after a crash</dd>
+                            <dt><kbd>R</kbd></dt><dd>Restart run</dd>
+                            <dt><kbd>Esc</kbd></dt><dd>End run</dd>
+                        </dl>
+                    </section>
+                    <section>
+                        <h3>World</h3>
+                        <dl>
+                            <dt>Drag</dt><dd>Orbit camera</dd>
+                            <dt>Right drag</dt><dd>Pan camera</dd>
+                            <dt>Scroll</dt><dd>Zoom</dd>
+                            <dt><kbd>N</kbd></dt><dd>Day / night</dd>
+                            <dt><kbd>M</kbd></dt><dd>Blizzard</dd>
+                            <dt><kbd>H</kbd></dt><dd>Photo mode (hide UI)</dd>
+                            <dt><kbd>?</kbd></dt><dd>This sheet</dd>
+                        </dl>
+                    </section>
                 </div>
             </div>
         </div>
 
-        <!-- Loading Screen -->
+        <!-- ================= Title screen ================= -->
+        <div id="title-screen" role="dialog" aria-labelledby="title-heading">
+            <div class="title-inner">
+                <div class="title-eyebrow"><svg aria-hidden="true"><use href="#i-logo"/></svg>A cozy ski-resort builder</div>
+                <h1 id="title-heading" class="title-wordmark">Alpine<br>Dreams</h1>
+                <p class="title-tagline">Build your mountain. Then ride it.</p>
+                <div class="title-actions">
+                    <button id="title-start" class="cta cta-primary"><svg><use href="#i-hammer"/></svg>Start Building</button>
+                    <button id="title-ride" class="cta cta-ghost"><svg><use href="#i-skier"/></svg>Quick Ride</button>
+                </div>
+                <button id="title-shortcuts" class="title-link">Keyboard shortcuts</button>
+            </div>
+            <div class="title-foot"><kbd>Enter</kbd> to begin</div>
+        </div>
+
+        <!-- ================= Loading screen ================= -->
         <div id="loading-screen">
             <div class="loader">
-                <div class="snowflake">❄️</div>
-                <p>Building your mountain...</p>
+                <svg class="loader-art" viewBox="0 0 220 120" aria-hidden="true">
+                    <circle class="ld-sun" cx="160" cy="34" r="12"/>
+                    <path class="ld-range ld-back" d="M4 104 46 52l22 26 30-44 30 38 18-20 32 34 38 18"/>
+                    <path class="ld-range ld-front" d="M4 112 62 40l26 30 22-22 40 48 22-14 44 30"/>
+                    <path class="ld-cap" d="M51 54 62 40l10 12-6 4-5-3-5 4z"/>
+                    <path class="ld-ground" d="M4 112h212"/>
+                </svg>
+                <div class="loader-word">Alpine Dreams</div>
+                <p class="loader-sub">Shaping the mountain</p>
+                <div class="loader-bar"><span></span></div>
             </div>
         </div>
     </div>
