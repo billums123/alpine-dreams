@@ -170,10 +170,22 @@ npm run dev              # in the overworld repo, then open /?at=alpine-dreams
 
 Walk through the gate, play, then use **Back to Hestermania** and check the result card.
 
-## Re-importing after changes
+## Shipping to Hestermania (automatic)
 
-The Overworld bundles a copy of this repo in `worlds/alpine-dreams/game/`. After you
-change the game, from the overworld repo run:
+Every push to `main` goes live in Hestermania within a few minutes. The "Update Hestermania"
+Action (`.github/workflows/hestermania.yml`) rebuilds the Railway services. The overworld
+build runs `tools/sync-remote-worlds.mjs`, which downloads this repo's latest `main` and
+re-imports it. To see what's live, open `<worlds origin>/worlds/alpine-dreams/game/source.json`;
+it shows the repo, ref and sha that were imported. The Action needs the repo secret `RAILWAY_TOKEN`,
+a project token for hestermania's production environment.
+
+So `main` must always stay Overworld-compatible: relative paths, no CDN, the bridge intact.
+Test risky changes on a branch, using the manual import below, before merging.
+
+## Re-importing after changes (manual, for local testing)
+
+The Overworld bundles a copy of this repo in `worlds/alpine-dreams/game/`. To test a
+change locally before merging, from the overworld repo run:
 
 ```bash
 npm run world:import -- ~/Dev/alpine-dreams --id alpine-dreams --bump
