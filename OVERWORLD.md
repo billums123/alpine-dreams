@@ -174,9 +174,9 @@ Walk through the gate, play, then use **Back to Hestermania** and check the resu
 
 Every push to `main` goes live in Hestermania within a few minutes. The "Update Hestermania"
 Action (`.github/workflows/hestermania.yml`) rebuilds the Railway services. The overworld
-build runs `tools/sync-remote-worlds.mjs`, which downloads this repo's latest `main` and
-re-imports it. To see what's live, open `<worlds origin>/worlds/alpine-dreams/game/source.json`;
-it shows the repo, ref and sha that were imported. The Action needs the repo secret `RAILWAY_TOKEN`,
+build runs `tools/sync-remote-worlds.mjs` (driven by `remote-worlds.json` in the overworld repo), which downloads this repo's latest `main` and
+re-imports it with `world:import`, writing `game/source.json`. To see what's live, open `<worlds origin>/worlds/alpine-dreams/game/source.json`;
+it shows the `repo`, `ref`, `sha` and `syncedAt` of the imported build. The Action needs the repo secret `RAILWAY_TOKEN`,
 a project token for hestermania's production environment.
 
 So `main` must always stay Overworld-compatible: relative paths, no CDN, the bridge intact.
