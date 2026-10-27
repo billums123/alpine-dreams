@@ -1,0 +1,53 @@
+# Ship every push to main into Hestermania.
+#
+# The Hestermania Overworld (Railway project "hestermania") pulls this repo's
+# latest main at build time (overworld: tools/sync-remote-worlds.mjs), so a
+# rebuild of its services is all an update needs. This rebuilds both from their
+# last deployed source, which picks up the new commit.
+#
+# Needs the repo secret RAILWAY_TOKEN: a project token for "hestermania",
+# production environment (Railway → project settings → Tokens).
+name: Update Hestermania
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: hestermania
+  cancel-in-progress: true
+
+env:
+  PROJECT_ID: c835aa56-d505-413a-a346-5a660c3a1d54
+  ENVIRONMENT_ID: 796862f3-f06e-4394-b2f9-ef31c6ccff15
+  # overworld-worlds serves the game, overworld the hub (world list, versions).
+  SERVICE_IDS: 24a3de81-3cf3-4bc4-8bb6-5e9999dd9ec6 621c006c-bd1a-4cee-833c-4494cc89fd42
+
+jobs:
+  redeploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Rebuild Hestermania services
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${RAILWAY_TOKEN}" ]; then echo "::error::RAILWAY_TOKEN secret is not set"; exit 1; fi
+          gql() {
+            curl -sS --fail-with-body https://backboard.railway.com/graphql/v2 \
+              -H "Project-Access-Token: ${RAILWAY_TOKEN}" -H "Content-Type: application/json" \
+              -d "$1"
+          }
+          for svc in $SERVICE_IDS; do
+            q=$(jq -nc --arg p "$PROJECT_ID" --arg e "$ENVIRONMENT_ID" --arg s "$svc" \
+              '{query:"query($p:String!,$e:String!,$s:String!){deployments(first:1,input:{projectId:$p,environmentId:$e,serviceId:$s,status:{in:[SUCCESS]}}){edges{node{id}}}}",variables:{p:$p,e:$e,s:$s}}')
+            dep=$(gql "$q" | jq -r '.data.deployments.edges[0].node.id // empty')
+            if [ -z "$dep" ]; then echo "::error::no successful deployment found for service $svc"; exit 1; fi
+            m=$(jq -nc --arg id "$dep" \
+              '{query:"mutation($id:String!){deploymentRedeploy(id:$id,usePreviousImageTag:false){id status}}",variables:{id:$id}}')
+            out=$(gql "$m")
+            echo "$out" | jq -e '.data.deploymentRedeploy.id' >/dev/null || { echo "::error::redeploy failed for $svc: $out"; exit 1; }
+            echo "service $svc: rebuilding from $dep → $(echo "$out" | jq -r '.data.deploymentRedeploy.id')"
+          done

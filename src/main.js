@@ -19,6 +19,9 @@ import { UI } from './ui/UI.js';
 import { TouchControls } from './ui/TouchControls.js';
 import { Music } from './audio/Music.js';
 import { Sfx } from './audio/Sfx.js';
+import { inOverworld, signalReady, exitToOverworld, setBeforeExit, onPauseChange, onHostMute, isPaused, isHostMuted } from './overworld/bridge.js';
+
+if (inOverworld) document.body.classList.add('in-overworld');
 
 const isTyping = (e) => {
     const t = e.target;
@@ -112,6 +115,7 @@ class AlpineDreams {
             this.ui.init();
             this.touchControls = new TouchControls(this.skier);
             this.syncAudio();
+            this.setupOverworld();
 
             window.addEventListener('keydown', (e) => {
                 if (isTyping(e) || e.ctrlKey || e.metaKey || e.altKey) return;
@@ -128,6 +132,9 @@ class AlpineDreams {
             setTimeout(() => {
                 document.getElementById('loading-screen')?.classList.add('hidden');
             }, 500);
+
+            // Overworld: playable once the first frame is on screen (no-op standalone).
+            requestAnimationFrame(() => requestAnimationFrame(() => signalReady()));
         } catch (error) {
             console.error('Failed to initialize Alpine Dreams:', error);
         }
@@ -140,6 +147,41 @@ class AlpineDreams {
         events.on('ui:toggle-night', () => this.toggleNightMode());
         events.on('ui:toggle-blizzard', () => this.toggleBlizzard());
         events.on('ui:quality', ({ level } = {}) => { if (level) this.sceneManager.setQuality(level); });
+    }
+
+    /**
+     * Hestermania Overworld hooks (all no-ops standalone): host pause freezes the
+     * sim, render and all audio; host mute is separate from the in-game toggles;
+     * the Back button (and the host's request-exit) closes out an active run so
+     * it counts, then leaves with the best run as the result card.
+     */
+    setupOverworld() {
+        if (!inOverworld) return;
+        let pausedAt = 0;
+        const applyPause = (paused) => {
+            this.sceneManager.setPaused(paused);
+            this.music.setPaused(paused);
+            if (paused) {
+                pausedAt = performance.now();
+                // Drop held keys / touch buttons: their keyup may land while we're frozen.
+                if (this.skier?.input) for (const k in this.skier.input) this.skier.input[k] = false;
+            } else if (pausedAt) {
+                // Run timer and combo window ignore the paused time.
+                const gap = performance.now() - pausedAt;
+                if (this.skier?.stats?.runStartTime) this.skier.stats.runStartTime += gap;
+                if (this.skier?.lastTrickTime) this.skier.lastTrickTime += gap;
+                pausedAt = 0;
+            }
+        };
+        onPauseChange(applyPause);
+        onHostMute((muted) => this.music.setHostMuted(muted));
+        if (isPaused()) applyPause(true);
+        if (isHostMuted()) this.music.setHostMuted(true);
+
+        setBeforeExit(() => { if (this.skier?.isActive) this.skier.remove({ instant: true }); });
+        const leave = () => exitToOverworld();
+        document.getElementById('ow-exit')?.addEventListener('click', leave);
+        document.getElementById('title-ow-exit')?.addEventListener('click', leave);
     }
 
     syncAudio() {

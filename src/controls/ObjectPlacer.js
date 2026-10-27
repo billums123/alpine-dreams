@@ -543,6 +543,22 @@ export class ObjectPlacer {
     setupEvents() {
         this.domElement.addEventListener('mousemove', this.onMouseMove);
         this.domElement.addEventListener('mousedown', this.onMouseDown);
+        // Touch / pen: place or select on a tap, so a one-finger drag still orbits
+        // and two fingers still pinch. A mouse keeps placing on press (above).
+        this.domElement.addEventListener('pointerdown', (e) => {
+            if (e.pointerType === 'mouse') return;
+            this._tap = e.isPrimary ? { x: e.clientX, y: e.clientY, t: performance.now(), id: e.pointerId } : null;
+        });
+        this.domElement.addEventListener('pointerup', (e) => {
+            if (e.pointerType === 'mouse') return;
+            this._lastTouch = performance.now();
+            const st = this._tap;
+            this._tap = null;
+            if (!st || st.id !== e.pointerId) return;
+            if (Math.hypot(e.clientX - st.x, e.clientY - st.y) > 12 || performance.now() - st.t > 600) return; // a drag
+            this.onMouseMove(e); // move the ghost under the finger first
+            this.onMouseDown(e);
+        });
         this.domElement.addEventListener('mouseleave', () => {
             this.ghostVisible = false;
             this._setHover(null);
@@ -729,7 +745,25 @@ export class ObjectPlacer {
         this._hasMouse = true;
     }
 
+    /** Mouse events a browser synthesizes after a tap (the tap was already handled). */
+    _isCompatMouse(event) {
+        return event.type.startsWith('mouse') && performance.now() - (this._lastTouch || 0) < 800;
+    }
+
+    /** Rotate the ghost or the selection 45° (the touch Rotate button; R on a keyboard). */
+    rotateTarget(steps = 1) {
+        const target = this.previewObject || (this.selectedObject && this.selectedObject.object);
+        if (!target) return false;
+        // Lifts are world-space groups at the origin; don't spin them around (0,0,0)
+        if (!this.previewObject && isLift(this.selectedObject.type)) return false;
+        if (this.previewObject && isLift(this.currentObjectType)) return false;
+        target.rotation.y += steps * (Math.PI / 4);
+        if (target === this.previewObject && this.currentObjectType === 'lodge') this._lodgeYawSet = true;
+        return true;
+    }
+
     onMouseMove(event) {
+        if (this._isCompatMouse(event)) return;
         this._setMouse(event);
         this._mouseDirty = true;
         if (this.mode === 'place') this._updateGhostFromMouse();
@@ -776,7 +810,7 @@ export class ObjectPlacer {
     }
 
     onMouseDown(event) {
-        if (event.button !== 0) return;
+        if (event.button !== 0 || this._isCompatMouse(event)) return;
         if (event.target.closest && event.target.closest('#ui-overlay')) return;
         if (this.skiing) return;
         this._setMouse(event);

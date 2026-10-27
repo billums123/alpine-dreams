@@ -90,7 +90,8 @@ kbd {
 
 .hidden { display: none !important; }
 
-#app { position: relative; width: 100%; height: 100%; }
+/* Fixed so it fills an iframe / phone viewport exactly, whatever the URL bar does */
+#app { position: fixed; inset: 0; overflow: hidden; }
 
 #canvas { display: block; width: 100%; height: 100%; outline: none; touch-action: none; }
 
@@ -107,7 +108,8 @@ kbd {
 /* --------------------------- Overlay layout -------------------------- */
 #ui-overlay {
     position: absolute;
-    inset: 0;
+    /* Every panel is positioned inside this box, so notches / home bars are respected once */
+    inset: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
     pointer-events: none;
     z-index: 10;
 }
@@ -1132,9 +1134,10 @@ body.is-skiing #canvas { cursor: none; }
     #object-palette .palette-section.ride { order: -1; }
     #object-palette .palette-divider { display: none; }
     #object-palette .palette-items { flex-wrap: wrap; justify-content: center; }
-    #mode-indicator { bottom: calc(var(--gutter) + 124px); }
+    /* Stacked above the audio cluster (they shared a row and overlapped) */
+    #mode-indicator { bottom: calc(var(--gutter) + 184px); }
     #music-controls { bottom: calc(var(--gutter) + 124px); }
-    #toast-region { bottom: calc(var(--gutter) + 184px); }
+    #toast-region { bottom: calc(var(--gutter) + 244px); }
 }
 @media (max-width: 560px) {
     .stats-panel { display: none; }
@@ -1169,7 +1172,7 @@ body.touch-ui.is-skiing #touch-ski {
 }
 #touch-ski .touch-zone {
     position: absolute;
-    bottom: calc(var(--gutter) + env(safe-area-inset-bottom, 0px));
+    bottom: var(--gutter);
     display: flex;
     gap: 12px;
     align-items: flex-end;
@@ -1198,7 +1201,7 @@ body.touch-ui.is-skiing #touch-ski {
 #touch-ski .touch-btn.active { transform: scale(.92); background: rgba(var(--accent-rgb), .38); }
 #touch-ski .touch-btn.exit {
     position: absolute;
-    top: calc(var(--gutter) + env(safe-area-inset-top, 0px));
+    top: var(--gutter);
     right: var(--gutter);
     width: auto;
     height: 40px;
@@ -1211,9 +1214,56 @@ body.touch-ui.is-skiing #touch-ski {
     #touch-ski .touch-btn.big { width: 76px; height: 76px; }
     #touch-ski .touch-zone { gap: 8px; }
 }
+/* Top-left, clear of the centred score (the Esc chip it replaces is hidden on touch) */
+#touch-ski .touch-btn.reset {
+    position: absolute;
+    top: var(--gutter);
+    left: var(--gutter);
+    width: auto;
+    height: 40px;
+    padding: 0 16px;
+    border-radius: var(--radius-pill);
+    pointer-events: auto;
+}
 body.touch-ui.is-skiing .esc-chip { display: none; }
 /* Touch: speedo moves up out of the thumb zone */
 body.touch-ui .speed-display { bottom: calc(var(--gutter) + 92px); width: 108px; height: 108px; }
 body.touch-ui #speed-value { font-size: 36px; }
 body.touch-ui .stats-panel { bottom: calc(var(--gutter) + 92px); }
 #touch-ski .touch-btn.big { color: var(--ink); background: linear-gradient(160deg, #FFD7A8 0%, var(--accent-warm) 55%, #F2884A 100%); }
+
+/* ============================ Touch editing ============================ */
+/* No R / arrows / Del on a phone: the mode chip grows Rotate and Remove buttons. */
+.touch-only { display: none; }
+body.touch-ui #mode-indicator[data-kind="place"] #mode-rotate,
+body.touch-ui #mode-indicator[data-kind="select"] #mode-rotate,
+body.touch-ui #mode-indicator[data-kind="select"] #mode-remove { display: inline-grid; }
+body.touch-ui #mode-indicator .mode-esc { display: none; }
+
+/* ======================= Hestermania Overworld ========================= */
+/* body.in-overworld is set only inside the Overworld's iframe (src/main.js). */
+.ow-only { display: none !important; }
+body.in-overworld .ow-only { display: inline-flex !important; }
+/* The host draws its own Leave pill over our top-left corner. */
+body.in-overworld #title-bar,
+body.in-overworld .esc-chip,
+body.in-overworld #touch-ski .touch-btn.reset { top: calc(var(--gutter) + 40px); }
+#ow-exit {
+    position: absolute;
+    top: calc(var(--gutter) + 98px);
+    left: var(--gutter);
+    align-items: center;
+    gap: 8px;
+    height: 36px;
+    padding: 0 14px 0 10px;
+    border-radius: var(--radius-pill);
+    color: var(--text);
+    font: 600 13px/1 var(--font-ui);
+    transition: transform var(--t-fast) var(--ease), background var(--t-fast) var(--ease), opacity var(--t-med) var(--ease);
+}
+#ow-exit svg { width: 18px; height: 18px; stroke-width: 2; }
+#ow-exit:hover { background: rgba(14, 23, 38, .62); transform: translateY(-1px); }
+#ow-exit:active { transform: scale(.96); }
+@media (max-width: 600px) {
+    #ow-exit { top: calc(var(--gutter) + 88px); height: 32px; font-size: 12px; }
+}

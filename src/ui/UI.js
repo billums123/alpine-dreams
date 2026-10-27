@@ -157,11 +157,19 @@ export class UI {
             this.updateHint();
         });
 
-        // Sculpting / brush pointer events
+        // Touch has no R / arrows / Del: rotate the ghost or selection, remove the selection
+        $('mode-rotate')?.addEventListener('click', () => {
+            if (!this.objectPlacer.rotateTarget?.(1)) this.toast('Lifts follow their stations', { duration: 1400 });
+        });
+        $('mode-remove')?.addEventListener('click', () => this.objectPlacer.deleteSelected?.());
+
+        // Sculpting / brush: pointer events, so a finger sculpts as well as a mouse
         const canvas = this.sceneManager.renderer.domElement;
-        canvas.addEventListener('mousemove', this.onMouseMove);
-        canvas.addEventListener('mousedown', this.onMouseDown);
-        window.addEventListener('mouseup', this.onMouseUp);
+        this._touchPointers = new Set();
+        canvas.addEventListener('pointermove', this.onMouseMove);
+        canvas.addEventListener('pointerdown', this.onMouseDown);
+        window.addEventListener('pointerup', this.onMouseUp);
+        window.addEventListener('pointercancel', this.onMouseUp);
         canvas.addEventListener('mouseleave', this.onMouseLeave);
 
         window.addEventListener('keydown', this.onKeyDownGlobal);
@@ -485,6 +493,11 @@ export class UI {
     }
 
     onMouseDown(e) {
+        if (e.pointerType === 'touch') {
+            this._touchPointers.add(e.pointerId);
+            // A second finger means pinch / orbit the camera, not sculpt.
+            if (this._touchPointers.size > 1) { this.onMouseUp(); return; }
+        }
         if (!this.sculptMode || e.button !== 0) return;
         if (e.ctrlKey || this.ctrlPressed) return; // ctrl-drag orbits
         if (e.target.closest && e.target.closest('#ui-overlay')) return;
@@ -503,7 +516,8 @@ export class UI {
         }
     }
 
-    onMouseUp() {
+    onMouseUp(e) {
+        if (e && e.pointerType === 'touch') this._touchPointers.delete(e.pointerId);
         if (!this.isSculpting) return;
         this.isSculpting = false;
         this.mountain.finalizeSculpt();
