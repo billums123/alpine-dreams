@@ -117,6 +117,7 @@ export class SceneManager {
         this.preset = getPreset(this.quality);
 
         this._running = false;
+        this.paused = false;
         this._autoTune = { steps: 0, cooldown: AUTOTUNE_WARMUP, acc: 0, frames: 0, slowTime: 0 };
         this._unsubs = [];
     }
@@ -159,7 +160,11 @@ export class SceneManager {
 
         this._unsubs.push(events.on('quality:change', ({ level }) => this._applyQuality(level)));
 
+        // Phones (and the Overworld's iframe) also resize on rotation and when the
+        // browser chrome or on-screen keyboard shows/hides; re-check after rotation settles.
         window.addEventListener('resize', () => this.onResize());
+        window.addEventListener('orientationchange', () => setTimeout(() => this.onResize(), 250));
+        window.visualViewport?.addEventListener('resize', () => this.onResize());
         document.addEventListener('visibilitychange', () => {
             // A hidden tab produces huge deltas; never let them count as "slow"
             this._resetAutoTune(2);
@@ -176,8 +181,14 @@ export class SceneManager {
         // Big retina canvases are fill-rate bound with MSAA + post: past ~2600
         // device px wide, 1.5x is visually indistinguishable and far cheaper.
         const dpr = window.devicePixelRatio || 1;
+        // Phones: thousands of trees + shadows + post at 3x DPR is too much at any tier.
+        if (cap > 1.5 && this._coarse()) cap = 1.5;
         if (cap > 1.5 && window.innerWidth * Math.min(dpr, cap) > 2600) cap = 1.5;
         return Math.min(dpr, cap);
+    }
+
+    _coarse() {
+        try { return window.matchMedia('(pointer: coarse)').matches; } catch (e) { return false; }
     }
 
     _buildPost() {
@@ -275,11 +286,28 @@ export class SceneManager {
     onResize() {
         const width = window.innerWidth;
         const height = window.innerHeight;
+        if (!width || !height) return;
         this.camera.aspect = width / height;
         this.camera.updateProjectionMatrix();
         this.renderer.setPixelRatio(this._pixelRatio());
         this.renderer.setSize(width, height);
         if (this.postFX) this.postFX.setSize(width, height);
+        // Resizing clears the canvas; while paused, redraw the frozen frame.
+        if (this.paused) this.renderFrame(0);
+    }
+
+    /**
+     * Freeze (Overworld pause): no simulation, no camera, no rendering. On
+     * resume the paused time is dropped so physics doesn't jump.
+     */
+    setPaused(paused) {
+        paused = !!paused;
+        if (paused === this.paused) return;
+        this.paused = paused;
+        if (!paused && this.clock) {
+            this.clock.getDelta();
+            this._resetAutoTune(2);
+        }
     }
 
     start() {
@@ -291,6 +319,7 @@ export class SceneManager {
 
     animate() {
         requestAnimationFrame(() => this.animate());
+        if (this.paused) return;
 
         const rawDelta = this.clock.getDelta();
         const delta = Math.min(rawDelta, 0.1); // keep physics stable after hitches

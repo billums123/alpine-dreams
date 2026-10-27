@@ -29,6 +29,9 @@ const LOOKAHEAD_S = 0.14;       // how far ahead we schedule notes
 const SCHEDULER_MS = 30;        // how often the scheduler wakes up
 const CROSSFADE_S = 1.5;
 const STORAGE_KEY = 'alpineDreams.musicMuted';
+// Gestures that may unlock audio. Mobile Safari only honours some of them
+// (touchend / click), so we keep listening until the context is really running.
+const UNLOCK_EVENTS = ['pointerdown', 'keydown', 'touchstart', 'touchend', 'click'];
 
 const TRACKS = [
     { id: 1, name: 'Shimmer Drive', bpm: 110, level: 1.0 },
@@ -80,6 +83,10 @@ export class Music {
 
         this.isPlaying = false;
         this.isMuted = readStoredBool(STORAGE_KEY);
+        // Overworld host state (see setPaused / setHostMuted). Never persisted and
+        // separate from the player's own music / sfx toggles.
+        this.paused = false;
+        this.hostMuted = false;
         this.volume = 0.55;
         this.currentTrack = 1;
         this.bpm = TRACKS[0].bpm;
@@ -114,7 +121,7 @@ export class Music {
     /** Arms the first-gesture unlock. Never creates a context without a gesture. */
     init() {
         const opts = { capture: true };
-        ['pointerdown', 'keydown', 'touchstart'].forEach(t => document.addEventListener(t, this._unlock, opts));
+        UNLOCK_EVENTS.forEach(t => document.addEventListener(t, this._unlock, opts));
         document.addEventListener('visibilitychange', this._onVisibility);
 
         // Context for the Auto mix (tracked before unlock too)
@@ -130,12 +137,17 @@ export class Music {
     }
 
     _unlock() {
-        ['pointerdown', 'keydown', 'touchstart'].forEach(t => document.removeEventListener(t, this._unlock, { capture: true }));
+        if (this.paused) return; // the host has us frozen: stay silent, keep listening
         this.tryStart();
+        const ctx = this.audioContext;
+        if (!ctx) return;
+        const done = () => UNLOCK_EVENTS.forEach(t => document.removeEventListener(t, this._unlock, { capture: true }));
+        if (ctx.state === 'running') done();
+        else ctx.resume?.().then(() => { if (ctx.state === 'running') done(); }).catch(() => {});
     }
 
     _onVisibility() {
-        if (!this.audioContext) return;
+        if (!this.audioContext || this.paused) return;
         const el = this.active?.kind === 'sample' ? this.sampleTracks[this.active.key]?.el : null;
         if (document.hidden) {
             this.audioContext.suspend?.().catch(() => {});
@@ -155,7 +167,7 @@ export class Music {
 
     tryStart() {
         if (this.audioContext) {
-            if (this.audioContext.state === 'suspended') this.audioContext.resume().catch(() => {});
+            if (this.audioContext.state === 'suspended' && !this.paused) this.audioContext.resume().catch(() => {});
             return;
         }
         const Ctx = window.AudioContext || window.webkitAudioContext;
@@ -171,8 +183,9 @@ export class Music {
             this.limiter.attack.value = 0.004;
             this.limiter.release.value = 0.22;
 
+            // masterOut carries the Overworld host mute (music + sfx both pass through it)
             this.masterOut = ctx.createGain();
-            this.masterOut.gain.value = 1;
+            this.masterOut.gain.value = this.hostMuted ? 0 : 1;
             this.limiter.connect(this.masterOut);
             this.masterOut.connect(ctx.destination);
 
@@ -201,10 +214,11 @@ export class Music {
             this.noiseBuffer = this._makeNoise(2);
             this.impulse = this._makeImpulse(3.2, 2.6);
 
-            if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+            if (ctx.state === 'suspended' && !this.paused) ctx.resume().catch(() => {});
 
             this.setDucked(this.ducked);
             this.play();
+            if (this.paused) this._freeze(true);
         } catch (e) {
             console.warn('Could not start music:', e);
         }
@@ -303,7 +317,7 @@ export class Music {
         g.cancelScheduledValues(now);
         g.setValueAtTime(g.value, now);
         if (on) {
-            if (!this.isMuted) t.el.play()?.catch?.(() => {});
+            if (!this.isMuted && !this.paused) t.el.play()?.catch?.(() => {});
             g.linearRampToValueAtTime(SAMPLE_LEVEL * t.def.trim, now + CROSSFADE_S);
         } else {
             g.linearRampToValueAtTime(0, now + CROSSFADE_S);
@@ -875,8 +889,49 @@ export class Music {
             this.output.gain.cancelScheduledValues(now);
             this.output.gain.setTargetAtTime(this.volume, now, 0.25);
             clearTimeout(this._muteTimer);
-            if (this.active?.kind === 'sample') this.sampleTracks[this.active.key]?.el?.play()?.catch?.(() => {});
+            if (this.active?.kind === 'sample' && !this.paused) this.sampleTracks[this.active.key]?.el?.play()?.catch?.(() => {});
         }
+    }
+
+    // ==========================================
+    // OVERWORLD HOST (pause / global mute)
+    // ==========================================
+    /**
+     * Host pause: suspend the shared context (synth tracks, every Sfx loop and
+     * one-shot stop with it) and pause the recorded track's media element,
+     * which plays outside the context's clock. Resume restores both.
+     */
+    setPaused(paused) {
+        paused = !!paused;
+        if (paused === this.paused) return;
+        this.paused = paused;
+        if (this.audioContext) this._freeze(paused);
+    }
+
+    _freeze(paused) {
+        const ctx = this.audioContext;
+        if (paused) {
+            ctx.suspend?.().catch(() => {});
+            Object.values(this.sampleTracks).forEach(t => t.el?.pause());
+            return;
+        }
+        if (document.hidden) return; // _onVisibility resumes when the tab comes back
+        ctx.resume?.().catch(() => {});
+        const el = this.active?.kind === 'sample' ? this.sampleTracks[this.active.key]?.el : null;
+        if (el && !this.isMuted) el.play()?.catch?.(() => {});
+        if (this.bus) this.bus.nextTime = Math.max(this.bus.nextTime, ctx.currentTime + 0.05);
+    }
+
+    /** Host-wide mute: silences music and sfx without touching the player's own toggles. */
+    setHostMuted(muted) {
+        this.hostMuted = !!muted;
+        if (!this.masterOut) return;
+        const now = this.audioContext.currentTime;
+        const g = this.masterOut.gain;
+        g.cancelScheduledValues(now);
+        // While suspended the clock is frozen, so a ramp would never finish: jump.
+        if (this.audioContext.state !== 'running') g.setValueAtTime(this.hostMuted ? 0 : 1, now);
+        else g.setTargetAtTime(this.hostMuted ? 0 : 1, now, 0.08);
     }
 
     toggleMute() {

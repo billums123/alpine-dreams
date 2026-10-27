@@ -82,7 +82,15 @@ export class TouchControls {
         exit.innerHTML = '<span>Exit</span>';
         exit.addEventListener('click', () => this._send('down', 'Escape'));
 
-        root.append(steer, act, exit);
+        // No R key on a phone: back to the start of the run (same run, score keeps counting)
+        const reset = document.createElement('button');
+        reset.type = 'button';
+        reset.className = 'touch-btn glass reset';
+        reset.setAttribute('aria-label', 'Back to start');
+        reset.innerHTML = '<span>Reset</span>';
+        reset.addEventListener('click', () => this._send('down', 'KeyR'));
+
+        root.append(steer, act, reset, exit);
         (document.getElementById('ui-overlay') || document.body).appendChild(root);
         this.root = root;
 

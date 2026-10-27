@@ -315,7 +315,7 @@ export class SkiHud {
         setTimeout(() => c.remove(), 2200);
     }
 
-    showPrompt(html = '<kbd>Space</kbd> Get back up') {
+    showPrompt(html = document.body.classList.contains('touch-ui') ? 'Tap <kbd>Jump</kbd> to get back up' : '<kbd>Space</kbd> Get back up') {
         const pr = this.el.prompt;
         if (!pr) return;
         if (pr.classList.contains('hidden')) {

@@ -90,12 +90,21 @@ cd alpine-dreams
 python3 -m http.server 8000   # or: npx serve
 ```
 
-Then open `http://localhost:8000`. Three.js loads from a CDN through an import map, so nothing needs to be installed.
+Then open `http://localhost:8000`. Three.js r161 is vendored in `vendor/three/` and mapped in through an import map, so nothing needs to be installed and the game runs without a CDN. The only external request is the optional Google Fonts stylesheet, which never blocks rendering.
+
+## Playing in the Hestermania Overworld
+
+Alpine Dreams is also a world in the Hestermania Overworld, Tanner's three.js hub of games. It speaks Overworld contract v1 through `overworld-sdk.js`. Inside the Overworld it pauses and mutes with the host, reports each run, awards Passport achievements, saves your best run and shows a **Back to Hestermania** button. Opened on its own, nothing changes: the SDK does nothing outside the Overworld.
+
+See [OVERWORLD.md](OVERWORLD.md) for every message it sends and handles, the touch controls, how to test it, and how to re-import it after changes.
 
 ## Project structure
 
 ```
 index.html            Markup, import map, SVG icon sprite
+overworld-sdk.js      Hestermania Overworld SDK (a no-op standalone)
+OVERWORLD.md          Overworld integration notes
+vendor/three/         three.js r161 + the addons the game imports (no CDN)
 styles/main.css       All UI styling (glass panels, dock, HUD, responsive and touch)
 DESIGN_BRIEF.md       Art direction and palette for the facelift
 src/
@@ -107,6 +116,7 @@ src/
   controls/           CameraControls (fly-to), ObjectPlacer (placement, generators, beacons), BrushCursor
   ui/                 UI (editor chrome), Hud (ski HUD), TouchControls (mobile ski input)
   audio/              Music, Sfx
+  overworld/          bridge.js: the game's only contact with the Overworld SDK
 ```
 
 ## License
